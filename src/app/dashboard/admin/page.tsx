@@ -104,7 +104,7 @@ export default function AdminDashboard() {
             </div>
         </div>
 
-        <div className="mt-12 p-8 bg-blue-900/10 border border-blue-500/20 rounded-xl">
+        {/* <div className="mt-12 p-8 bg-blue-900/10 border border-blue-500/20 rounded-xl">
             <h2 className="text-xl font-bold mb-4">ℹ️ Developer Note</h2>
             <p className="text-gray-300">
                 Since we switched to the <strong>Automated Verification System</strong>, 
@@ -114,7 +114,7 @@ export default function AdminDashboard() {
                 When a user clicks "Verify" on their dashboard, your <strong>API Route</strong> 
                 automatically signs the transaction using the Private Key stored in your <code>.env.local</code> file.
             </p>
-        </div>
+        </div> */}
 
       </main>
     </div>

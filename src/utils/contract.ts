@@ -1,10 +1,8 @@
 // src/utils/contract.ts
 
 // 1. Your Deployed Contract Address (String)
-export const CONTRACT_ADDRESS = "0x671d60aae95f6a83e1f86253e12749746326c222"; 
-// 0xce675683907eB07c1F348D43792350EA8923A9b0
-// 2. Your Contract ABI (Array)
-// This defines the functions your frontend can call.
+export const CONTRACT_ADDRESS = "0x69E68d2Ac46fEB327713Ec7E90e926e196c184B7"; 
+
 export const CONTRACT_ABI = [
 	{
 		"inputs": [
