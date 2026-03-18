@@ -83,7 +83,7 @@ export default function PortalSelection() {
 
       {/* Section header */}
       <div className="text-center mb-12">
-        <span className="inline-block text-indigo-400 font-semibold tracking-widest uppercase text-xs border border-indigo-500/25 bg-indigo-500/5 px-4 py-1.5 rounded-full mb-4">
+        <span className="inline-block text-gray-400 font-medium tracking-wide uppercase text-[10px] border border-white/[0.08] bg-white/[0.03] px-3 py-1 rounded-md mb-4">
           Access Portal
         </span>
         <h2 className="text-3xl md:text-4xl font-bold mb-3 text-white tracking-tight">
@@ -100,7 +100,7 @@ export default function PortalSelection() {
         {/* USER PORTAL */}
         <div
           onClick={handleUserPortalClick}
-          className="group relative cursor-pointer rounded-2xl border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.055] hover:border-indigo-500/30 transition-all duration-200 p-7 overflow-hidden"
+          className="group relative cursor-pointer rounded-xl border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.12] transition-colors duration-200 p-7 overflow-hidden"
         >
           {/* Loading Overlay */}
           {(!mounted || isBlockchainLoading || isChecking) && (
@@ -112,8 +112,8 @@ export default function PortalSelection() {
 
           {/* Top row: icon + badge */}
           <div className="flex items-start justify-between mb-5">
-            <div className="w-11 h-11 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-center justify-center">
-              <User size={22} className="text-indigo-400" />
+            <div className="w-10 h-10 bg-white/5 border border-white/10 rounded-lg flex items-center justify-center">
+              <User size={18} className="text-white" strokeWidth={1.5} />
             </div>
             {mounted && isConnected && Boolean((userData as readonly [string, string, boolean] | undefined)?.[2]) ? (
               <span className="flex items-center gap-1 bg-green-500/10 border border-green-500/20 text-green-400 text-xs font-medium px-2.5 py-1 rounded-full">
@@ -138,13 +138,13 @@ export default function PortalSelection() {
               { icon: CheckCircle, text: "Blockchain-verified ownership proof" },
             ].map(({ icon: Icon, text }, i) => (
               <li key={i} className="flex items-center gap-2.5 text-sm text-gray-400">
-                <Icon size={13} className="text-indigo-400 flex-shrink-0" />
+                <Icon size={14} className="text-gray-400 flex-shrink-0" strokeWidth={1.5} />
                 {text}
               </li>
             ))}
           </ul>
 
-          <button className="w-full bg-indigo-600 hover:bg-indigo-500 transition-colors py-2.5 rounded-lg text-sm font-semibold text-white flex items-center justify-center gap-2">
+          <button className="w-full bg-white hover:bg-gray-100 transition-colors py-2.5 rounded-lg text-sm font-medium text-black flex items-center justify-center gap-2">
             {Boolean((userData as readonly [string, string, boolean] | undefined)?.[2]) ? "Enter Dashboard" : "Access User Portal"}
             <ArrowRight size={15} className="group-hover:translate-x-0.5 transition-transform" />
           </button>
@@ -153,12 +153,12 @@ export default function PortalSelection() {
         {/* ADMIN PORTAL */}
         <div
           onClick={handleAdminPortalClick}
-          className="group relative cursor-pointer rounded-2xl border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.055] hover:border-purple-500/30 transition-all duration-200 p-7 overflow-hidden"
+          className="group relative cursor-pointer rounded-xl border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.12] transition-colors duration-200 p-7 overflow-hidden"
         >
           {/* Top row: icon + badge */}
           <div className="flex items-start justify-between mb-5">
-            <div className="w-11 h-11 bg-purple-500/10 border border-purple-500/20 rounded-xl flex items-center justify-center">
-              <Building2 size={22} className="text-purple-400" />
+            <div className="w-10 h-10 bg-white/5 border border-white/10 rounded-lg flex items-center justify-center">
+              <Building2 size={18} className="text-white" strokeWidth={1.5} />
             </div>
             <span className="flex items-center gap-1 bg-white/5 border border-white/10 text-gray-500 text-xs font-medium px-2.5 py-1 rounded-full">
               <Lock size={10} /> Restricted
@@ -177,13 +177,13 @@ export default function PortalSelection() {
               { icon: Lock, text: "Administrative oversight & full control" },
             ].map(({ icon: Icon, text }, i) => (
               <li key={i} className="flex items-center gap-2.5 text-sm text-gray-400">
-                <Icon size={13} className="text-purple-400 flex-shrink-0" />
+                <Icon size={14} className="text-gray-400 flex-shrink-0" strokeWidth={1.5} />
                 {text}
               </li>
             ))}
           </ul>
 
-          <button className="w-full bg-white/5 border border-white/10 hover:bg-purple-600 hover:border-transparent transition-all py-2.5 rounded-lg text-sm font-semibold text-gray-200 flex items-center justify-center gap-2">
+          <button className="w-full bg-transparent border border-white/20 hover:bg-white/5 transition-colors py-2.5 rounded-lg text-sm font-medium text-white flex items-center justify-center gap-2">
             Access Admin Portal
             <ArrowRight size={15} className="group-hover:translate-x-0.5 transition-transform" />
           </button>
@@ -194,8 +194,8 @@ export default function PortalSelection() {
       <div className="max-w-4xl mx-auto border-t border-white/[0.06] pt-8 grid grid-cols-2 md:grid-cols-4 gap-4">
         {trustBadges.map(({ icon: Icon, label }, i) => (
           <div key={i} className="flex items-center gap-2.5">
-            <Icon size={15} className="text-indigo-400 flex-shrink-0" />
-            <span className="text-xs text-gray-500">{label}</span>
+            <Icon size={14} className="text-gray-400 flex-shrink-0" strokeWidth={1.5} />
+            <span className="text-[11px] text-gray-400">{label}</span>
           </div>
         ))}
       </div>

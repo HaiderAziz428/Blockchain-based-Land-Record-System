@@ -5,7 +5,10 @@ import {
   RainbowKitProvider,
   getDefaultWallets,
   getDefaultConfig,
+  darkTheme,
+  Theme,
 } from '@rainbow-me/rainbowkit';
+
 import {
   trustWallet,
   ledgerWallet,
@@ -36,13 +39,21 @@ const config = getDefaultConfig({
   },
 });
 
+const myTheme: Theme = darkTheme({
+  accentColor: '#4f46e5',
+  accentColorForeground: '#ffffff',
+  borderRadius: 'medium',
+  fontStack: 'system',
+  overlayBlur: 'small',
+});
+
 const queryClient = new QueryClient();
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
     <WagmiProvider config={config}>
       <QueryClientProvider client={queryClient}>
-        <RainbowKitProvider>
+        <RainbowKitProvider theme={myTheme}>
           {children}
         </RainbowKitProvider>
       </QueryClientProvider>

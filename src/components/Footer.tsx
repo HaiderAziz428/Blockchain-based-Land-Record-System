@@ -17,37 +17,33 @@ export default function Footer() {
   };
 
   return (
-    <footer className="relative mt-16 border-t border-white/5 bg-[#06070f]/80 backdrop-blur-md">
-      {/* Top glow line */}
-      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-48 h-px bg-gradient-to-r from-transparent via-indigo-500/60 to-transparent" />
-
+    <footer className="mt-16 border-t border-white/[0.05] bg-[#0a0b1e]">
       <div className="max-w-6xl mx-auto px-6 md:px-12 py-16">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-12 mb-12">
           {/* Brand */}
           <div className="md:col-span-1">
             <div className="flex items-center gap-2.5 mb-4">
-              <div className="bg-gradient-to-br from-indigo-500 to-purple-600 p-2 rounded-xl">
-                <Landmark className="text-white" size={18} />
+              <div className="bg-indigo-600 p-2 rounded-lg border border-indigo-500/50">
+                <Landmark className="text-white" size={18} strokeWidth={1.5} />
               </div>
-              <span className="font-extrabold tracking-tight uppercase text-white">LandLedger</span>
+              <span className="font-bold tracking-tight text-white">LandLedger</span>
             </div>
             <p className="text-gray-500 text-sm leading-relaxed mb-5">
-              Pakistan&apos;s first blockchain-based land registry. Secure, transparent, and government-backed property records.
+              Pakistan's first blockchain-based land registry. Secure, transparent, and government-backed property records.
             </p>
           </div>
 
           {/* Link Columns */}
           {Object.entries(links).map(([title, items]) => (
             <div key={title}>
-              <h5 className="font-bold mb-5 text-xs uppercase tracking-widest text-indigo-400">{title}</h5>
+              <h5 className="font-medium mb-5 text-sm text-gray-300">{title}</h5>
               <ul className="space-y-3">
                 {items.map(({ label, href }) => (
                   <li key={label}>
                     <a
                       href={href}
-                      className="text-sm text-gray-500 hover:text-white transition-colors flex items-center gap-1.5 group"
+                      className="text-sm text-gray-500 hover:text-white transition-opacity duration-200"
                     >
-                      <span className="w-0 group-hover:w-3 h-px bg-indigo-400 transition-all duration-200" />
                       {label}
                     </a>
                   </li>
@@ -58,28 +54,28 @@ export default function Footer() {
 
           {/* Contact */}
           <div>
-            <h5 className="font-bold mb-5 text-xs uppercase tracking-widest text-indigo-400">Contact</h5>
+            <h5 className="font-medium mb-5 text-sm text-gray-300">Contact</h5>
             <ul className="space-y-3.5 text-sm text-gray-500">
               <li className="flex items-start gap-2.5">
-                <MapPin size={15} className="text-indigo-400 flex-shrink-0 mt-0.5" />
+                <MapPin size={15} className="text-gray-400 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
                 <span>Land Registry Office,<br />Islamabad, Pakistan</span>
               </li>
               <li className="flex items-center gap-2.5">
-                <Mail size={15} className="text-indigo-400 flex-shrink-0" />
-                <a href="mailto:info@landledger.gov.pk" className="hover:text-white transition-colors">
+                <Mail size={15} className="text-gray-400 flex-shrink-0" strokeWidth={1.5} />
+                <a href="mailto:info@landledger.gov.pk" className="hover:text-white transition-opacity duration-200">
                   info@landledger.gov.pk
                 </a>
               </li>
               <li className="flex items-center gap-2.5">
-                <Phone size={15} className="text-indigo-400 flex-shrink-0" />
+                <Phone size={15} className="text-gray-400 flex-shrink-0" strokeWidth={1.5} />
                 <span>+92 (51) 123-4567</span>
               </li>
               <li>
                 <a
                   href="#"
-                  className="flex items-center gap-1.5 text-xs text-indigo-400 hover:text-indigo-300 transition-colors mt-1"
+                  className="flex items-center gap-1.5 text-xs text-indigo-400 hover:text-indigo-300 transition-opacity mt-1"
                 >
-                  <ExternalLink size={12} /> View on Block Explorer
+                  <ExternalLink size={12} strokeWidth={1.5} /> View on Etherscan
                 </a>
               </li>
             </ul>
@@ -87,11 +83,11 @@ export default function Footer() {
         </div>
 
         {/* Bottom bar */}
-        <div className="pt-8 border-t border-white/5 flex flex-col md:flex-row items-center justify-between gap-3 text-xs text-gray-600">
+        <div className="pt-8 border-t border-white/[0.05] flex flex-col md:flex-row items-center justify-between gap-3 text-xs text-gray-600">
           <span>© 2025 LandLedger. A Government of Pakistan Initiative. All rights reserved.</span>
           <div className="flex items-center gap-4">
-            <a href="#" className="hover:text-gray-400 transition-colors">Privacy Policy</a>
-            <a href="#" className="hover:text-gray-400 transition-colors">Terms of Use</a>
+            <a href="#" className="hover:text-gray-400 transition-opacity duration-200">Privacy Policy</a>
+            <a href="#" className="hover:text-gray-400 transition-opacity duration-200">Terms of Use</a>
           </div>
         </div>
       </div>

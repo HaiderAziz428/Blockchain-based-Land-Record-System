@@ -156,68 +156,68 @@ export default function UserDashboard() {
             <Navbar />
             <main className="p-6 md:p-12 max-w-7xl mx-auto">
                 <header className="mb-12 animate-[fadeUp_0.4s_ease]">
-                    <h1 className="text-3xl md:text-4xl font-bold">Welcome, <span className="text-brand-secondary">{userData?.full_name}</span></h1>
-                    <p className="text-gray-400 mt-2">Managing properties registered to CNIC: <span className="font-mono text-white/80">{userData?.cnic}</span></p>
+                    <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">Welcome, <span className="text-white">{userData?.full_name}</span></h1>
+                    <p className="text-gray-500 mt-2 text-sm">Managing properties registered to CNIC: <span className="font-mono text-gray-400">{userData?.cnic}</span></p>
                 </header>
 
-                <h2 className="text-2xl font-bold mb-6">Your Property Portfolio</h2>
+                <h2 className="text-xl font-semibold mb-6 tracking-tight">Your Property Portfolio</h2>
 
                 {plots.length > 0 ? (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                         {plots.map((plot) => (
-                            <div key={plot.land_id} className={`glass-card p-6 rounded-2xl flex flex-col justify-between transition-all duration-300 ${plot.isMinted ? 'border-brand-primary/30 shadow-[0_0_20px_rgba(99,102,241,0.1)]' : 'border-white/10'}`}>
+                            <div key={plot.land_id} className={`p-6 rounded-xl flex flex-col justify-between transition-colors overflow-hidden bg-white/[0.02] ${plot.isMinted ? 'border border-white/[0.12] hover:bg-white/[0.04]' : 'border border-white/[0.06]'}`}>
                                 <div>
                                     <div className="flex justify-between items-start mb-4">
-                                        <span className="bg-white/10 border border-white/20 text-white/80 text-xs px-3 py-1 rounded-full font-mono font-bold tracking-wider">
+                                        <span className="bg-white/5 border border-white/10 text-gray-400 text-[10px] px-2.5 py-1 rounded-md font-mono tracking-wider">
                                             {plot.land_id}
                                         </span>
                                         {plot.isMinted ? (
-                                            <span className="text-xs bg-green-500/20 text-green-400 px-2.5 py-1 rounded-full border border-green-500/30 flex items-center gap-1">
-                                                <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" /> On-Chain
+                                            <span className="text-[10px] text-gray-400 px-2.5 py-1 flex items-center gap-1.5">
+                                                <div className="w-1.5 h-1.5 bg-green-500 rounded-full" /> On-Chain
                                             </span>
                                         ) : (
-                                            <span className="text-xs bg-gray-500/20 text-gray-400 px-2.5 py-1 rounded-full border border-gray-500/30">
+                                            <span className="text-[10px] text-gray-500 px-2.5 py-1">
                                                 Offline Record
                                             </span>
                                         )}
                                     </div>
 
-                                    <h3 className="text-xl font-bold mb-2">{plot.location}</h3>
-                                    <p className="text-gray-400 text-sm mb-6 flex items-center gap-2">
-                                        <MapPin size={14} className="text-brand-secondary" /> {plot.area_sq_yards} Sq Yards
+                                    <h3 className="text-lg font-medium mb-1.5">{plot.location}</h3>
+                                    <p className="text-gray-500 text-sm mb-6 flex items-center gap-2">
+                                        <MapPin size={14} className="text-gray-400" strokeWidth={1.5} /> {plot.area_sq_yards} Sq Yards
                                     </p>
                                 </div>
 
                                 {/* DYNAMIC BUTTON LOGIC */}
                                 {plot.isMinted ? (
-                                    <div className="space-y-3">
+                                    <div className="space-y-2.5">
                                         {!plot.listingStatus && (
-                                            <button onClick={() => { setSelectedLand(plot); setListingModalOpen(true); }} className="w-full bg-brand-primary/10 border border-brand-primary/30 text-brand-primary hover:bg-brand-primary hover:text-white py-3 rounded-xl font-bold transition-all flex justify-center items-center gap-2">
-                                                <Tag size={16} /> Sell via Marketplace
+                                            <button onClick={() => { setSelectedLand(plot); setListingModalOpen(true); }} className="w-full bg-white hover:bg-gray-100 text-black py-2.5 rounded-lg text-sm font-medium transition-colors flex justify-center items-center gap-2">
+                                                <Tag size={14} strokeWidth={1.5} /> Sell via Marketplace
                                             </button>
                                         )}
 
                                         {plot.listingStatus === 'listed' && (
                                             <div className="space-y-2">
-                                                <div className="text-center text-xs text-yellow-400 bg-yellow-500/10 border border-yellow-500/20 py-1.5 rounded-lg">Listed (Negotiating)</div>
-                                                <button onClick={() => { setSelectedLand(plot); setFinalizeModalOpen(true); }} className="w-full bg-yellow-500/20 border border-yellow-500/40 hover:bg-yellow-500 text-yellow-300 hover:text-black py-3 rounded-xl font-bold transition-all flex justify-center items-center gap-2">
-                                                    <Handshake size={16} /> Finalize Price
+                                                <div className="text-center text-[11px] text-gray-400 border border-white/[0.08] bg-white/[0.02] py-1.5 rounded-md">Listed (Negotiating)</div>
+                                                <button onClick={() => { setSelectedLand(plot); setFinalizeModalOpen(true); }} className="w-full bg-white hover:bg-gray-100 text-black py-2.5 rounded-lg text-sm font-medium transition-colors flex justify-center items-center gap-2">
+                                                    <Handshake size={14} strokeWidth={1.5} /> Finalize Price
                                                 </button>
                                             </div>
                                         )}
 
                                         {plot.listingStatus === 'on_chain' && (
-                                            <div className="space-y-2 bg-green-500/10 border border-green-500/20 p-3 rounded-xl">
-                                                <div className="text-center text-xs font-bold text-green-400 mb-2">Active on Marketplace ⚡</div>
-                                                <button onClick={() => handleCancelListing(plot.land_id)} disabled={!!cancelingId} className="w-full bg-red-500/20 hover:bg-red-500 text-red-300 hover:text-white py-2 rounded-lg font-bold text-xs transition-all disabled:opacity-50 flex justify-center items-center gap-1">
-                                                    {(cancelingId === plot.land_id && (isCancelingWallet || isCancelingChain)) ? <Loader2 className="animate-spin" size={14} /> : <XCircle size={14} />}
+                                            <div className="space-y-2 border border-white/[0.08] bg-white/[0.02] p-3 rounded-xl">
+                                                <div className="text-center text-[11px] text-gray-300 mb-2">Active on Marketplace</div>
+                                                <button onClick={() => handleCancelListing(plot.land_id)} disabled={!!cancelingId} className="w-full bg-transparent hover:bg-white/5 text-gray-400 border border-white/10 py-2 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex justify-center items-center gap-1.5">
+                                                    {(cancelingId === plot.land_id && (isCancelingWallet || isCancelingChain)) ? <Loader2 className="animate-spin" size={12} /> : <XCircle size={12} strokeWidth={1.5} />}
                                                     Cancel Listing
                                                 </button>
                                             </div>
                                         )}
 
                                         {plot.listingStatus === 'sold' && (
-                                            <div className="w-full bg-white/5 border border-white/10 text-white/50 py-3 rounded-xl text-center text-sm font-bold">
+                                            <div className="w-full bg-white/[0.02] border border-white/[0.06] text-gray-500 py-2.5 rounded-lg text-center text-[11px] font-medium tracking-wide">
                                                 Sold / Transferred
                                             </div>
                                         )}
@@ -226,12 +226,12 @@ export default function UserDashboard() {
                                     <button
                                         onClick={() => handleMintRequest(plot.land_id)}
                                         disabled={!!mintingPlotId}
-                                        className="w-full bg-green-600/20 border border-green-500/30 text-green-400 hover:bg-green-600 hover:text-white py-3 rounded-xl font-bold transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                                        className="w-full bg-white hover:bg-gray-100 text-black py-2.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
                                     >
                                         {mintingPlotId === plot.land_id ? (
-                                            <><Loader2 className="animate-spin" size={18} /> Minting...</>
+                                            <><Loader2 className="animate-spin" size={16} /> Minting...</>
                                         ) : (
-                                            <><CheckCircle size={18} /> Verify & Mint NFT</>
+                                            <><CheckCircle size={14} strokeWidth={1.5} /> Verify & Mint NFT</>
                                         )}
                                     </button>
                                 )}
@@ -239,8 +239,8 @@ export default function UserDashboard() {
                         ))}
                     </div>
                 ) : (
-                    <div className="glass-card p-10 rounded-2xl text-center">
-                        <p className="text-white/50">No properties found for your CNIC in the government database.</p>
+                    <div className="p-10 rounded-xl border border-white/[0.06] bg-white/[0.02] text-center">
+                        <p className="text-gray-500 text-sm">No properties found for your CNIC in the government database.</p>
                     </div>
                 )}
 

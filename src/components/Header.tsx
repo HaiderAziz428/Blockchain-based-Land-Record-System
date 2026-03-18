@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-
+import '@rainbow-me/rainbowkit/styles.css';
 export default function Header() {
   return (
     <header className="fixed top-0 w-full z-50 bg-[#0f172a]/90 backdrop-blur-md border-b border-white/10">
@@ -29,7 +29,7 @@ export default function Header() {
         {/* Wallet Section - RainbowKit handles the heavy lifting */}
         <div>
           <ConnectButton 
-            accountStatus="avatar" 
+            accountStatus="full" 
             chainStatus="icon"
             showBalance={true}
           />
