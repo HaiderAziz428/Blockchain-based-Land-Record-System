@@ -58,8 +58,8 @@ export default function DigitizationModal({ isOpen, onClose, landId, onSuccess }
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm">
-      <div className="bg-[#1e293b] p-8 rounded-2xl w-full max-w-md border border-white/10 shadow-2xl">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#0a0b1e]/80 backdrop-blur-md p-4">
+      <div className="glass-card p-8 rounded-3xl w-full max-w-md relative animate-[fadeUp_0.3s_ease]">
         <h2 className="text-2xl font-bold text-white mb-2">Request Digitization</h2>
         <p className="text-gray-400 mb-6 text-sm">
           Upload your physical Sale Deed or Proof of Ownership. This will be permanently stored on IPFS.
@@ -93,7 +93,7 @@ export default function DigitizationModal({ isOpen, onClose, landId, onSuccess }
             <button 
                 onClick={handleUpload}
                 disabled={!file || uploading}
-                className="flex-[2] bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg transition-all disabled:opacity-50"
+                className="flex-[2] bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition-all disabled:opacity-50"
             >
                 {uploading ? 'Processing...' : 'Submit Request'}
             </button>

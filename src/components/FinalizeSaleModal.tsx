@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { parseEther } from 'viem';
+import { Lock, X, Loader2 } from 'lucide-react';
 import { marketDb } from '@/src/lib/marketplace';
 import { CONTRACT_ABI, CONTRACT_ADDRESS } from '@/src/utils/contract';
 
@@ -9,89 +10,77 @@ export default function FinalizeSaleModal({ isOpen, onClose, landId, onSuccess }
     const [price, setPrice] = useState('');
     const { writeContract, data: hash, isPending } = useWriteContract();
     const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
-    const hasProcessedRef = useRef(false); // Track if we've already processed this transaction
+    const hasProcessedRef = useRef(false);
 
-    // Reset when modal opens/closes
     useEffect(() => {
-        if (!isOpen) {
-            setPrice('');
-            hasProcessedRef.current = false;
-        }
+        if (!isOpen) { setPrice(''); hasProcessedRef.current = false; }
     }, [isOpen]);
 
     const handleFinalize = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!price || parseFloat(price) <= 0) return alert('Please enter a valid price');
+        hasProcessedRef.current = false;
 
-        if (!price || parseFloat(price) <= 0) {
-            alert('Please enter a valid price');
-            return;
-        }
-
-        hasProcessedRef.current = false; // Reset when starting new transaction
-
-        // Step 1: Call Smart Contract to list on-chain
         writeContract({
-            address: CONTRACT_ADDRESS,
+            address: CONTRACT_ADDRESS as `0x${string}`,
             abi: CONTRACT_ABI,
             functionName: 'listLandForSale',
             args: [landId, parseEther(price)]
-        } as any);
+        });
     };
 
-    // Step 2: After blockchain success, update database (run only once)
     useEffect(() => {
         const updateDatabase = async () => {
-            // Only process if success, have required data, and haven't processed yet
             if (isSuccess && landId && price && !hasProcessedRef.current) {
-                hasProcessedRef.current = true; // Mark as processed immediately
-
+                hasProcessedRef.current = true;
                 try {
-                    const { error } = await marketDb.from('listings')
-                        .update({ status: 'on_chain', final_price: price })
-                        .eq('land_id', landId);
-
+                    const { error } = await marketDb.from('listings').update({ status: 'on_chain', final_price: price }).eq('land_id', landId);
                     if (error) throw error;
-
-                    alert('✅ Listing is now active on the blockchain! Buyers can purchase now.');
+                    alert('✅ Price Locked on Blockchain! Buyers can purchase now.');
                     onSuccess();
                     onClose();
                 } catch (err: any) {
-                    alert('⚠️ Blockchain success but DB update failed: ' + err.message);
-                    hasProcessedRef.current = false; // Allow retry on error
+                    alert('⚠️ Blockchain success but DB update failed.');
+                    hasProcessedRef.current = false;
                 }
             }
         };
         updateDatabase();
-    }, [isSuccess, landId, price]); // Removed onSuccess and onClose from dependencies
+    }, [isSuccess, landId, price]);
 
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/90">
-            <div className="bg-[#1e293b] p-8 rounded-xl w-full max-w-md border border-green-500/30">
-                <h2 className="text-xl font-bold text-white mb-2">Finalize Sale Price</h2>
-                <p className="text-sm text-gray-400 mb-6">
-                    You have negotiated via WhatsApp. Now enter the <strong>Final Agreed Price</strong>.
-                    This will lock the price on the Blockchain. It cannot be changed once active.
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#0a0b1e]/80 backdrop-blur-md p-4">
+            <div className="glass-card p-8 rounded-3xl w-full max-w-md relative animate-[fadeUp_0.3s_ease]">
+                <button onClick={onClose} className="absolute top-4 right-4 text-white/50 hover:text-white"><X size={20} /></button>
+
+                <div className="flex justify-center mb-4">
+                    <div className="bg-green-500/20 p-3 rounded-2xl">
+                        <Lock size={32} className="text-green-400" />
+                    </div>
+                </div>
+
+                <h2 className="text-2xl font-bold text-white text-center mb-2">Finalize Sale Price</h2>
+                <p className="text-sm text-white/60 text-center mb-6">
+                    Enter the negotiated price for <span className="text-white font-mono">{landId}</span>. This action locks the price on-chain.
                 </p>
 
                 <form onSubmit={handleFinalize} className="space-y-4">
                     <div>
-                        <label className="text-gray-400 text-xs">Agreed Price (ETH)</label>
+                        <label className="text-xs text-white/60 mb-1 block">Agreed Price (ETH)</label>
                         <input
-                            type="number" step="0.0001"
-                            value={price} onChange={e => setPrice(e.target.value)}
-                            className="w-full bg-slate-900 border border-slate-700 p-4 rounded text-white text-xl font-mono"
-                            placeholder="0.00"
+                            type="number" step="0.0001" value={price} onChange={e => setPrice(e.target.value)}
+                            className="w-full bg-black/30 border border-white/10 p-4 rounded-xl text-white text-xl font-mono outline-none focus:border-green-500"
+                            placeholder="0.00" required
                         />
                     </div>
 
                     <button type="submit" disabled={isPending || isConfirming}
-                        className="w-full bg-green-600 hover:bg-green-700 py-3 rounded-lg font-bold text-white disabled:opacity-50">
-                        {isPending ? 'Check Wallet...' : isConfirming ? 'Confirming on Blockchain...' : 'Lock Price & Enable Buy'}
+                        className="w-full bg-green-600 hover:bg-green-500 py-3.5 rounded-xl font-bold text-white disabled:opacity-50 flex items-center justify-center gap-2">
+                        {(isPending || isConfirming) && <Loader2 className="animate-spin" size={18} />}
+                        {isPending ? 'Check Wallet...' : isConfirming ? 'Confirming on Chain...' : 'Lock Price & Enable Buy'}
                     </button>
-
-                    <button type="button" onClick={onClose} className="w-full text-gray-500 text-sm mt-2">Cancel</button>
                 </form>
             </div>
         </div>

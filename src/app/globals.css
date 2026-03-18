@@ -1,21 +1,114 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0a0b1e;
+  --foreground: #ffffff;
+  --color-brand-dark: #0a0b1e;
+  --color-brand-card: rgba(30, 31, 64, 0.6);
+  --color-brand-primary: #6366f1;
+  --color-brand-secondary: #a855f7;
+  --color-glass: rgba(255, 255, 255, 0.04);
+  --color-glass-border: rgba(255, 255, 255, 0.08);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+@theme {
+  --color-brand-dark: var(--color-brand-dark);
+  --color-brand-card: var(--color-brand-card);
+  --color-brand-primary: var(--color-brand-primary);
+  --color-brand-secondary: var(--color-brand-secondary);
+  --color-glass: var(--color-glass);
+  --color-glass-border: var(--color-glass-border);
+  --shadow-glass: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  --background-image-grid-dots: radial-gradient(circle,
+      rgba(255, 255, 255, 0.15) 1px,
+      transparent 1px);
 }
 
+/* === Base === */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
 
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
 
 body {
-  background: var(--background);
+  background-color: var(--color-brand-dark);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-image: var(--background-image-grid-dots);
+  background-size: 36px 36px;
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+/* === Glass Card === */
+.glass-card {
+  background: var(--color-glass);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--color-glass-border);
+  box-shadow: var(--shadow-glass);
+}
+
+/* === Fade-up entry animation === */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+main>* {
+  animation: fadeUp 0.45s ease both;
+}
+
+main>*:nth-child(1) {
+  animation-delay: 0ms;
+}
+
+main>*:nth-child(2) {
+  animation-delay: 100ms;
+}
+
+main>*:nth-child(3) {
+  animation-delay: 200ms;
+}
+
+/* === Custom scrollbar === */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-brand-dark);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1e1b4b;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #3730a3;
+}
+
+/* === Focus & Selection === */
+:focus-visible {
+  outline: 2px solid rgba(99, 102, 241, 0.6);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: rgba(99, 102, 241, 0.25);
+  color: #fff;
 }

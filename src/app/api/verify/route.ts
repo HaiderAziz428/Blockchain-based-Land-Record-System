@@ -32,15 +32,17 @@ export async function POST(request: Request) {
   const supabase = createClient(supabaseUrl, supabaseKey);
   const account = privateKeyToAccount(adminPrivateKey as `0x${string}`);
 
+  const rpcUrl = "https://ethereum-sepolia.publicnode.com";
+  
   const walletClient = createWalletClient({
     account,
     chain: sepolia,
-    transport: http()
+    transport: http(rpcUrl)
   });
 
   const publicClient = createPublicClient({
     chain: sepolia,
-    transport: http()
+    transport: http(rpcUrl)
   });
 
   try {
@@ -107,10 +109,19 @@ export async function POST(request: Request) {
     // ---------------------------------------------------------
     // 7. EXECUTE MINTING (Admin pays Gas)
     // ---------------------------------------------------------
-    const ipfsHash = "QmAutoVerified_" + landId; // Placeholder hash
+    const ipfsHash = "ipfs://verified_" + landId;
     const landType = 0; // 0 = Residential
 
-    console.log("   - Simulating Transaction...");
+    console.log("\\n=======================================================");
+    console.log("🚀 MINTING TRANSACTION DETAILS (ADMIN WALLET)");
+    console.log("=======================================================");
+    console.log(`➡️ Admin Wallet Action: ${account.address}`);
+    console.log(`➡️ Target SC Address: ${CONTRACT_ADDRESS}`);
+    console.log(`➡️ Target User Wallet: ${userAddress}`);
+    console.log(`➡️ Land ID Minting: ${landId}`);
+    console.log(`➡️ IPFS Metadata: ${ipfsHash}`);
+    console.log("-------------------------------------------------------");
+    console.log("   ⏳ Simulating Transaction (Gas estimation & Access Checks)...");
     const { request: txRequest } = await publicClient.simulateContract({
       account,
       address: CONTRACT_ADDRESS,
@@ -119,10 +130,18 @@ export async function POST(request: Request) {
       args: [userAddress, landId, ipfsHash, landType]
     });
 
-    console.log("   - Writing to Blockchain...");
+    console.log("   ✅ Simulation Passed. NO Reverts detected.");
+    console.log("   📡 Broadcasting to Sepolia Testnet...");
+    
+    // Execute the transaction
     const txHash = await walletClient.writeContract(txRequest);
 
-    console.log(`   - Success! Tx: ${txHash}`);
+    console.log("-------------------------------------------------------");
+    console.log(`   🎉 Transaction Sent Successfully!`);
+    console.log(`   🔗 Explorer Link: https://sepolia.etherscan.io/tx/${txHash}`);
+    console.log(`   📝 Tx Hash: ${txHash}`);
+    console.log("=======================================================\\n");
+
     return NextResponse.json({ success: true, txHash });
 
   } catch (error: any) {

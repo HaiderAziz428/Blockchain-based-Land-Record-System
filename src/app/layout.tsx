@@ -1,35 +1,30 @@
 import type { Metadata } from "next";
-import { Inter, Poppins } from 'next/font/google';
-import Header from "../components/Header";
+import { Inter } from "next/font/google";
 import "./globals.css";
 import { ReactNode } from "react";
 import { Providers } from "./providers";
 
-export const metadata: Metadata = {
-  title: "Land Record System",
-};
-
 const inter = Inter({
-  subsets: ['latin'],
-  variable: '--font-body',
-  weight: ['400', '500'],
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-inter",
 });
 
-const poppins = Poppins({
-  subsets: ['latin'],
-  variable: '--font-heading',
-  weight: ['400', '600', '700'],
-});
+export const metadata: Metadata = {
+  title: "LandLedger – Pakistan's Blockchain Land Registry",
+  description:
+    "Pakistan's first government-backed blockchain Land Registry. Secure, transparent, and immutable property records verified on-chain.",
+  keywords: ["land registry", "blockchain", "Pakistan", "property records", "DApp", "government"],
+};
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" className={inter.variable} suppressHydrationWarning>
       <body
-        className={`${inter.variable} ${poppins.variable}`}
+        style={{ fontFamily: "var(--font-inter), ui-sans-serif, system-ui, sans-serif" }}
         suppressHydrationWarning
       >
         <Providers>
-          <Header/>
           {children}
         </Providers>
       </body>

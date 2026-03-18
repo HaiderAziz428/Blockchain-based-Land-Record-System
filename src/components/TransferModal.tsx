@@ -96,8 +96,8 @@ export default function TransferModal({ isOpen, onClose, land, onSuccess }: Tran
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm">
-      <div className="bg-[#1e293b] p-8 rounded-2xl w-full max-w-md border border-white/10 shadow-2xl">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#0a0b1e]/80 backdrop-blur-md p-4">
+      <div className="glass-card p-8 rounded-3xl w-full max-w-md relative animate-[fadeUp_0.3s_ease]">
         <h2 className="text-2xl font-bold text-white mb-2">Transfer Ownership</h2>
         <p className="text-gray-400 mb-6 text-sm">
           Transferring: <span className="text-white font-bold">{land.location} (Plot: {land.plot_number})</span>
@@ -110,7 +110,7 @@ export default function TransferModal({ isOpen, onClose, land, onSuccess }: Tran
               type="text" 
               value={receiverAddress}
               onChange={(e) => setReceiverAddress(e.target.value)}
-              className="w-full bg-[#0f172a] border border-gray-700 rounded-lg p-3 text-white focus:outline-none focus:border-blue-500 font-mono text-sm"
+              className="w-full bg-black/30 border border-white/10 rounded-xl p-4 text-white focus:outline-none focus:border-indigo-500 font-mono text-sm"
               placeholder="0x..."
               disabled={isPending || isConfirming}
             />
@@ -140,7 +140,7 @@ export default function TransferModal({ isOpen, onClose, land, onSuccess }: Tran
             <button 
                 type="submit" 
                 disabled={isPending || isConfirming || !receiverAddress}
-                className="flex-[2] bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg transition-all disabled:opacity-50"
+                className="flex-[2] bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition-all disabled:opacity-50"
             >
                 Transfer Now
             </button>
