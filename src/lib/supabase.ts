@@ -2,14 +2,13 @@
 import { createClient } from '@supabase/supabase-js'
 
 // Option 1: Most recommended - runtime check + early error
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY || ''
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error(
-    'Missing Supabase environment variables!\n' +
-    'Please define NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY in .env.local'
-  )
+// We only want to throw the error if we are on the client-side/runtime, 
+// not during the Vercel build/static-export step.
+if (typeof window !== 'undefined' && (!supabaseUrl || !supabaseAnonKey)) {
+  console.warn('Supabase credentials missing!');
 }
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
