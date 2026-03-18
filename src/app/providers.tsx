@@ -14,7 +14,7 @@ import {
   sepolia,
 } from 'wagmi/chains';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { WagmiProvider, http } from 'wagmi';
+import { WagmiProvider, http, fallback } from 'wagmi';
 import '@rainbow-me/rainbowkit/styles.css';
 
 const { wallets } = getDefaultWallets();
@@ -26,8 +26,13 @@ const config = getDefaultConfig({
   appName: 'LandLedger',
   projectId,
   chains: [sepolia],
+  ssr: true, // 🚀 Enables perfect Server-Side Rendering & stops hydration errors
   transports: {
-    [sepolia.id]: http(),
+    [sepolia.id]: fallback([
+        http('https://ethereum-sepolia.publicnode.com'),
+        http('https://rpc2.sepolia.org'),
+        http() // Default fallback
+    ]),
   },
 });
 

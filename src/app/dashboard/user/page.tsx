@@ -28,7 +28,10 @@ export default function UserDashboard() {
     const { writeContract: mintWriteContract, isPending: isMintingWallet, data: mintTxHash } = useWriteContract();
     const { isLoading: isMintingChain, isSuccess: isMintConfirmed } = useWaitForTransactionReceipt({ hash: mintTxHash });
 
-    // State
+    // Hydration & State
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => setMounted(true), []);
+
     const [userData, setUserData] = useState<{ full_name: string; cnic: string } | null>(null);
     const [plots, setPlots] = useState<Plot[]>([]);
     const [isLoading, setIsLoading] = useState(true);
@@ -92,10 +95,10 @@ export default function UserDashboard() {
     };
 
     useEffect(() => {
-        if (userProfile && !isContractLoading) {
+        if (mounted && userProfile && !isContractLoading) {
             void loadData();
         }
-    }, [userProfile, isContractLoading, publicClient]);
+    }, [mounted, userProfile, isContractLoading, publicClient, address]);
 
     // --- ACTIONS ---
 
@@ -140,6 +143,9 @@ export default function UserDashboard() {
                 });
         }
     }, [isCancelConfirmed]);
+
+    // Professional Hydration Check
+    if (!mounted) return null;
 
     if (isLoading) {
         return <div className="flex items-center justify-center min-h-screen bg-brand-dark"><Loader2 className="animate-spin text-brand-primary" size={48} /></div>;

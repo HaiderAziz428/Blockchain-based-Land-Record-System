@@ -24,6 +24,9 @@ type Listing = {
 };
 
 export default function MarketplacePage() {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   const { address, isConnected } = useAccount();
   const publicClient = usePublicClient();
   const [listings, setListings] = useState<Listing[]>([]);
@@ -148,6 +151,8 @@ export default function MarketplacePage() {
     };
     void sync();
   }, [isSuccess, buyingId, userProfile]);
+
+  if (!mounted) return null;
 
   return (
     <div className="min-h-screen bg-brand-dark text-white">

@@ -34,7 +34,6 @@ export default function Footer() {
             <p className="text-gray-500 text-sm leading-relaxed mb-5">
               Pakistan&apos;s first blockchain-based land registry. Secure, transparent, and government-backed property records.
             </p>
-           
           </div>
 
           {/* Link Columns */}

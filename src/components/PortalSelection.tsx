@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAccount, useReadContract } from 'wagmi';
 import { CONTRACT_ABI, CONTRACT_ADDRESS } from '@/src/utils/contract';
@@ -22,6 +22,12 @@ import {
 } from "lucide-react";
 
 export default function PortalSelection() {
+  const [mounted, setMounted] = useState(false);
+  
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   const { address, isConnected } = useAccount();
   const router = useRouter();
 
@@ -97,7 +103,7 @@ export default function PortalSelection() {
           className="group relative cursor-pointer rounded-2xl border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.055] hover:border-indigo-500/30 transition-all duration-200 p-7 overflow-hidden"
         >
           {/* Loading Overlay */}
-          {(isBlockchainLoading || isChecking) && (
+          {(!mounted || isBlockchainLoading || isChecking) && (
             <div className="absolute inset-0 bg-[#0a0b1e]/85 backdrop-blur-sm flex flex-col items-center justify-center z-20 rounded-2xl">
               <Loader2 className="animate-spin text-indigo-400 mb-2" size={28} />
               <p className="text-xs text-gray-400 font-medium">Reading blockchain state…</p>
@@ -109,7 +115,7 @@ export default function PortalSelection() {
             <div className="w-11 h-11 bg-indigo-500/10 border border-indigo-500/20 rounded-xl flex items-center justify-center">
               <User size={22} className="text-indigo-400" />
             </div>
-            {isConnected && Boolean((userData as readonly [string, string, boolean] | undefined)?.[2]) ? (
+            {mounted && isConnected && Boolean((userData as readonly [string, string, boolean] | undefined)?.[2]) ? (
               <span className="flex items-center gap-1 bg-green-500/10 border border-green-500/20 text-green-400 text-xs font-medium px-2.5 py-1 rounded-full">
                 <CheckCircle size={11} /> Registered
               </span>
