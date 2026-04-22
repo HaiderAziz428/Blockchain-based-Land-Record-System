@@ -3,7 +3,15 @@ import { useState } from 'react';
 import { X, UploadCloud, Loader2 } from 'lucide-react';
 import { marketDb } from '@/src/lib/marketplace';
 
-export default function CreateListingModal({ isOpen, onClose, land, onSuccess, sellerAddress }: any) {
+interface CreateListingModalProps {
+    isOpen: boolean;
+    onClose: () => void;
+    land: { land_id: string; location: string };
+    sellerAddress: string;
+    onSuccess: () => void;
+}
+
+export default function CreateListingModal({ isOpen, onClose, land, onSuccess, sellerAddress }: CreateListingModalProps) {
     const [loading, setLoading] = useState(false);
     const [status, setStatus] = useState('');
 
@@ -59,8 +67,8 @@ export default function CreateListingModal({ isOpen, onClose, land, onSuccess, s
             alert("Property Listed on Marketplace successfully!");
             onSuccess();
             onClose();
-        } catch (err: any) {
-            alert("Error: " + err.message);
+        } catch (err: unknown) {
+            alert("Error: " + (err instanceof Error ? err.message : 'Unknown error'));
         } finally {
             setLoading(false);
             setStatus('');

@@ -6,7 +6,14 @@ import { Lock, X, Loader2 } from 'lucide-react';
 import { marketDb } from '@/src/lib/marketplace';
 import { CONTRACT_ABI, CONTRACT_ADDRESS } from '@/src/utils/contract';
 
-export default function FinalizeSaleModal({ isOpen, onClose, landId, onSuccess }: any) {
+interface FinalizeSaleModalProps {
+    isOpen: boolean;
+    onClose: () => void;
+    landId: string;
+    onSuccess: () => void;
+}
+
+export default function FinalizeSaleModal({ isOpen, onClose, landId, onSuccess }: FinalizeSaleModalProps) {
     const [price, setPrice] = useState('');
     const { writeContract, data: hash, isPending } = useWriteContract();
     const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
@@ -39,7 +46,7 @@ export default function FinalizeSaleModal({ isOpen, onClose, landId, onSuccess }
                     alert('✅ Price Locked on Blockchain! Buyers can purchase now.');
                     onSuccess();
                     onClose();
-                } catch (err: any) {
+                } catch {
                     alert('⚠️ Blockchain success but DB update failed.');
                     hasProcessedRef.current = false;
                 }

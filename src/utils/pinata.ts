@@ -1,7 +1,6 @@
 // src/utils/pinata.ts
 import axios from 'axios';
 
-const JWT = process.env.NEXT_PUBLIC_PINATA_JWT; // Optional if using JWT
 const API_KEY = process.env.NEXT_PUBLIC_PINATA_API_KEY;
 const API_SECRET = process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
 

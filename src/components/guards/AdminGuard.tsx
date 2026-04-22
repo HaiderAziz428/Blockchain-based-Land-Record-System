@@ -12,10 +12,8 @@ export default function AdminGuard({ children }: { children: React.ReactNode }) 
     const chainId = useChainId();
     const [mounted, setMounted] = useState(false);
 
-    // 1. Ensure component is mounted on client to prevent SSR hydration errors
-    useEffect(() => {
-        setMounted(true);
-    }, []);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    useEffect(() => { setMounted(true); }, []);
 
     // 2. Read the Owner from the Smart Contract
     const { data: contractOwner, error, isLoading } = useReadContract({
@@ -72,7 +70,7 @@ export default function AdminGuard({ children }: { children: React.ReactNode }) 
                     <AlertTriangle size={64} className="text-orange-500 mx-auto mb-4" />
                     <h2 className="text-2xl font-bold text-white mb-2">Contract Not Found</h2>
                     <p className="text-gray-400 text-sm mb-4">
-                        The website cannot find your Smart Contract on Sepolia. It returned "0x" (empty data).
+                        The website cannot find your Smart Contract on Sepolia. It returned &quot;0x&quot; (empty data).
                     </p>
                     <div className="text-left bg-black/40 p-4 rounded-xl space-y-2 mb-6 font-mono text-xs">
                         <p className="text-purple-400">Target Address:</p>

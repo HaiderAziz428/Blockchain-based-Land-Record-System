@@ -60,12 +60,11 @@ export default function VerifyPage() {
 
       // Filter & Format Mints
       for (const log of mintLogs) {
-        // @ts-ignore
-        if (log.args.landId === landId) {
+        if ((log.args as Record<string, unknown>).landId === landId) {
           events.push({
             type: 'MINT',
             from: 'GOVT', // Minted by Govt
-            // @ts-ignore
+            // @ts-expect-error -- wagmi type inference
             to: log.args.owner,
             txHash: log.transactionHash,
             blockNumber: log.blockNumber
@@ -75,13 +74,12 @@ export default function VerifyPage() {
 
       // Filter & Format Transfers
       for (const log of transferLogs) {
-        // @ts-ignore
-        if (log.args.landId === landId) {
+        if ((log.args as Record<string, unknown>).landId === landId) {
           events.push({
             type: 'TRANSFER',
-            // @ts-ignore
+            // @ts-expect-error -- wagmi type inference
             from: log.args.from,
-            // @ts-ignore
+            // @ts-expect-error -- wagmi type inference
             to: log.args.to,
             txHash: log.transactionHash,
             blockNumber: log.blockNumber
@@ -112,8 +110,7 @@ export default function VerifyPage() {
     return statuses[statusIdx] || 'Unknown';
   };
 
-  // @ts-ignore
-  const isValidRecord = landRecord && landRecord.currentOwner !== ZERO_ADDRESS;
+  const isValidRecord = landRecord && (landRecord as Record<string, unknown>).currentOwner !== ZERO_ADDRESS;
 
   return (
     <div className="min-h-screen bg-[#020817] text-white">
@@ -165,23 +162,19 @@ export default function VerifyPage() {
               <div className="space-y-4">
                 <div>
                   <label className="text-xs text-gray-500">Current Owner</label>
-                  {/* @ts-ignore */}
-                  <p className="text-sm font-mono text-blue-300 break-all">{landRecord.currentOwner}</p>
+                  <p className="text-sm font-mono text-blue-300 break-all">{(landRecord as Record<string, unknown>).currentOwner as string}</p>
                 </div>
                 <div>
                   <label className="text-xs text-gray-500">CNIC</label>
-                  {/* @ts-ignore */}
-                  <p className="text-lg font-mono">{landRecord.cnic}</p>
+                  <p className="text-lg font-mono">{(landRecord as Record<string, unknown>).cnic as string}</p>
                 </div>
                 <div>
                   <label className="text-xs text-gray-500">Status</label>
-                  {/* @ts-ignore */}
-                  <p className="font-bold">{getStatusString(landRecord.status)}</p>
+                  <p className="font-bold">{getStatusString((landRecord as Record<string, unknown>).status as number)}</p>
                 </div>
                 <div>
-                    <a 
-                      // @ts-ignore
-                      href={`https://gateway.pinata.cloud/ipfs/${landRecord.ipfsHash}`}
+                    <a
+                      href={`https://gateway.pinata.cloud/ipfs/${(landRecord as Record<string, unknown>).ipfsHash as string}`}
                       target="_blank"
                       className="block w-full text-center bg-white/5 hover:bg-white/10 py-2 rounded border border-white/10 text-sm mt-4"
                     >

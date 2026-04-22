@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { ShieldCheck, Loader2, X } from 'lucide-react';
 import { supabase } from '@/src/lib/supabase';
@@ -15,6 +16,7 @@ export default function UserAuthModal({ isOpen, onClose }: UserAuthModalProps) {
   const [name, setName] = useState('');
   const [cnic, setCnic] = useState('');
   const [status, setStatus] = useState('');
+  const router = useRouter();
 
   const { writeContract, data: hash, isPending } = useWriteContract();
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
@@ -55,10 +57,10 @@ export default function UserAuthModal({ isOpen, onClose }: UserAuthModalProps) {
 
   useEffect(() => {
     if (isSuccess) {
-      setStatus('Success! Redirecting...');
-      setTimeout(() => window.location.href = '/dashboard/user', 1000);
+      const timer = setTimeout(() => router.push('/dashboard/user'), 1200);
+      return () => clearTimeout(timer);
     }
-  }, [isSuccess]);
+  }, [isSuccess, router]);
 
   if (!isOpen) return null;
 
@@ -98,10 +100,10 @@ export default function UserAuthModal({ isOpen, onClose }: UserAuthModalProps) {
             />
           </div>
 
-          {(status || isPending || isConfirming) && (
+          {(status || isPending || isConfirming || isSuccess) && (
             <div className="flex items-center justify-center gap-2 text-sm text-brand-secondary bg-brand-secondary/10 py-2 rounded-lg">
               <Loader2 className="animate-spin" size={16} />
-              {isPending ? 'Check Wallet...' : isConfirming ? 'Registering on Chain...' : status}
+              {isSuccess ? 'Registered! Redirecting…' : isPending ? 'Check Wallet...' : isConfirming ? 'Registering on Chain...' : status}
             </div>
           )}
 
