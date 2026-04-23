@@ -1,7 +1,7 @@
 // src/utils/contract.ts
 
 // 1. Your Deployed Contract Address (String)
-export const CONTRACT_ADDRESS = "0xB16CbBe7a93C996fE5b2bA8aEB7d08d61350E3c7"; 
+export const CONTRACT_ADDRESS = "0xd2a855a8fC38d4E0a871319d5882E696155d1253"; 
 
 export const CONTRACT_ABI = [
 	{
@@ -280,6 +280,12 @@ export const CONTRACT_ABI = [
 				"internalType": "address",
 				"name": "seller",
 				"type": "address"
+			},
+			{
+				"indexed": false,
+				"internalType": "string",
+				"name": "metadataHash",
+				"type": "string"
 			}
 		],
 		"name": "LandListed",
@@ -865,6 +871,11 @@ export const CONTRACT_ABI = [
 				"internalType": "uint256",
 				"name": "deadline",
 				"type": "uint256"
+			},
+			{
+				"internalType": "string",
+				"name": "metadataHash",
+				"type": "string"
 			}
 		],
 		"stateMutability": "view",
@@ -881,6 +892,11 @@ export const CONTRACT_ABI = [
 				"internalType": "uint256",
 				"name": "price",
 				"type": "uint256"
+			},
+			{
+				"internalType": "string",
+				"name": "metadataHash",
+				"type": "string"
 			}
 		],
 		"name": "listLandForSale",

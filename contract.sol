@@ -30,7 +30,8 @@ struct Listing {
         uint256 price;
         address seller;
         bool isActive;
-        uint256 deadline; // <--- NEW: Stores the expiration time
+        uint256 deadline;
+        string metadataHash; // IPFS CID of listing metadata (photos, description, area, etc.)
     }
 
 /// @notice Permanent Log of Transaction History
@@ -93,7 +94,7 @@ event HeirApproved(string oldLandId, address indexed heir);
 event InheritanceDisputed(string oldLandId, address indexed heir);
 event InheritanceFinalized(string oldLandId);
 event LandStatusChanged(string landId, LandStatus status);
-    event LandListed(string landId, uint256 price, address seller);
+    event LandListed(string landId, uint256 price, address seller, string metadataHash);
     event LandSold(string landId, address buyer, uint256 price);
     event ListingCancelled(string landId);
 
@@ -220,22 +221,28 @@ function transferLandOwnership(
     // ========================================================================
 
     /**
-     * @notice Seller lists land. Locked for 7 Days.
+     * @notice Seller lists land with IPFS metadata. Locked for 7 Days.
+     * @param metadataHash IPFS CID of the listing metadata JSON (photos, description, area, etc.)
      */
-    function listLandForSale(string calldata landId, uint256 price) external onlyActive(landId) {
+    function listLandForSale(
+        string calldata landId,
+        uint256 price,
+        string calldata metadataHash
+    ) external onlyActive(landId) {
         uint256 tokenId = getTokenIdFromLandId(landId);
         require(ownerOf(tokenId) == msg.sender, "Only owner can sell");
         require(price > 0, "Price must be > 0");
+        require(bytes(metadataHash).length > 0, "Metadata hash required");
 
-        // Create Listing with 7-Day Expiry
         landListings[landId] = Listing({
             price: price,
             seller: msg.sender,
             isActive: true,
-            deadline: block.timestamp + 7 days // <--- SETS THE TIMER
+            deadline: block.timestamp + 7 days,
+            metadataHash: metadataHash
         });
 
-        emit LandListed(landId, price, msg.sender);
+        emit LandListed(landId, price, msg.sender, metadataHash);
     }
 
     /**

@@ -11,7 +11,7 @@ interface TransferModalProps {
   onClose: () => void;
   landId: string;
   location: string;
-  onSuccess: () => void;
+  onSuccess: (txHash: string) => void;
 }
 
 export default function TransferModal({ isOpen, onClose, landId, location, onSuccess }: TransferModalProps) {
@@ -64,7 +64,7 @@ export default function TransferModal({ isOpen, onClose, landId, location, onSuc
 
   useEffect(() => {
     const syncDb = async () => {
-      if (!isSuccess || !receiverAddress || hasProcessedRef.current || !publicClient) return;
+      if (!isSuccess || !receiverAddress || hasProcessedRef.current || !publicClient || !hash) return;
       hasProcessedRef.current = true;
 
       try {
@@ -83,13 +83,13 @@ export default function TransferModal({ isOpen, onClose, landId, location, onSuc
             .eq('land_id', landId);
         }
 
-        onSuccess();
         onClose();
+        onSuccess(hash);
       } catch (e) {
         console.error('DB sync after transfer failed:', e);
         alert('Transfer confirmed on-chain, but government record sync failed. Please contact admin.');
-        onSuccess();
         onClose();
+        onSuccess(hash);
       }
     };
     void syncDb();
