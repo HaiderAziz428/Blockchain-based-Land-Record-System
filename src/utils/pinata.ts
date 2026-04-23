@@ -1,40 +1,65 @@
 // src/utils/pinata.ts
-import axios from 'axios';
 
-const JWT = process.env.NEXT_PUBLIC_PINATA_JWT; // Optional if using JWT
 const API_KEY = process.env.NEXT_PUBLIC_PINATA_API_KEY;
-const API_SECRET = process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
+const API_SECRET =
+  process.env.NEXT_PUBLIC_PINATA_API_SECRET ?? process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
 
-export const uploadToIPFS = async (file: File): Promise<string | null> => {
+function authHeaders(): Record<string, string> {
+  return {
+    pinata_api_key: API_KEY!,
+    pinata_secret_api_key: API_SECRET!,
+  };
+}
+
+function checkKeys(): boolean {
   if (!API_KEY || !API_SECRET) {
-    console.error("Pinata Keys are missing in .env.local");
-    return null;
+    console.error(
+      'Pinata API keys missing in .env.local (NEXT_PUBLIC_PINATA_API_KEY and NEXT_PUBLIC_PINATA_API_SECRET or NEXT_PUBLIC_PINATA_SECRET_KEY)'
+    );
+    return false;
   }
+  return true;
+}
 
+export const uploadFileToIPFS = async (file: File, name?: string): Promise<string | null> => {
+  if (!checkKeys()) return null;
   const formData = new FormData();
   formData.append('file', file);
-
-  const metadata = JSON.stringify({
-    name: `LandDoc_${Date.now()}`,
-  });
-  formData.append('pinataMetadata', metadata);
-
-  const options = JSON.stringify({
-    cidVersion: 0,
-  });
-  formData.append('pinataOptions', options);
-
+  formData.append('pinataMetadata', JSON.stringify({ name: name ?? `LandFile_${Date.now()}` }));
+  formData.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
   try {
-    const res = await axios.post("https://api.pinata.cloud/pinning/pinFileToIPFS", formData, {
-      headers: {
-        'Content-Type': `multipart/form-data`,
-        'pinata_api_key': API_KEY,
-        'pinata_secret_api_key': API_SECRET,
-      },
+    const res = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: formData,
     });
-    return res.data.IpfsHash; // Returns the Hash (e.g., Qm...)
-  } catch (error) {
-    console.error("Error uploading to Pinata:", error);
+    const data = await res.json();
+    return (data.IpfsHash as string) ?? null;
+  } catch (e) {
+    console.error('Pinata file upload failed:', e);
     return null;
   }
 };
+
+export const uploadJSONToIPFS = async (content: object, name?: string): Promise<string | null> => {
+  if (!checkKeys()) return null;
+  try {
+    const res = await fetch('https://api.pinata.cloud/pinning/pinJSONToIPFS', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({
+        pinataContent: content,
+        pinataMetadata: { name: name ?? `Metadata_${Date.now()}` },
+        pinataOptions: { cidVersion: 1 },
+      }),
+    });
+    const data = await res.json();
+    return (data.IpfsHash as string) ?? null;
+  } catch (e) {
+    console.error('Pinata JSON upload failed:', e);
+    return null;
+  }
+};
+
+// Backward-compat alias used by existing imports
+export const uploadToIPFS = uploadFileToIPFS;

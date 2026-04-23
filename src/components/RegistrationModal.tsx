@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect } from 'react';
 import { useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { useRouter } from 'next/navigation';
 import { CONTRACT_ABI, CONTRACT_ADDRESS } from '@/src/utils/contract';
 import { supabase } from '@/src/lib/supabase';
 
@@ -12,9 +13,9 @@ interface RegistrationModalProps {
 export default function RegistrationModal({ isOpen, onClose }: RegistrationModalProps) {
   const [name, setName] = useState('');
   const [cnic, setCnic] = useState('');
-  const [status, setStatus] = useState(''); // Feedback text
-  
-  // Wagmi Hooks
+  const [status, setStatus] = useState('');
+  const router = useRouter();
+
   const { writeContract, data: hash, isPending, error: writeError } = useWriteContract();
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
 
@@ -62,15 +63,12 @@ export default function RegistrationModal({ isOpen, onClose }: RegistrationModal
     }
   };
 
-  // Redirect on Success
   useEffect(() => {
     if (isSuccess) {
-      setStatus('Success! Redirecting...');
-      setTimeout(() => {
-          window.location.href = '/dashboard/user';
-      }, 1000);
+      const timer = setTimeout(() => router.push('/dashboard/user'), 1200);
+      return () => clearTimeout(timer);
     }
-  }, [isSuccess]);
+  }, [isSuccess, router]);
 
   if (!isOpen) return null;
 
@@ -105,9 +103,9 @@ export default function RegistrationModal({ isOpen, onClose }: RegistrationModal
             />
           </div>
 
-          {(status || isPending || isConfirming) && (
+          {(status || isPending || isConfirming || isSuccess) && (
             <div className="text-center text-sm font-medium text-blue-400 animate-pulse">
-              {isPending ? 'Please Sign in MetaMask...' : isConfirming ? 'Registering on Blockchain...' : status}
+              {isSuccess ? 'Success! Redirecting…' : isPending ? 'Please Sign in MetaMask...' : isConfirming ? 'Registering on Blockchain...' : status}
             </div>
           )}
 

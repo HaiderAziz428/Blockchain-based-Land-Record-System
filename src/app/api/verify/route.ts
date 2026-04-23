@@ -69,8 +69,9 @@ export async function POST(request: Request) {
     }) as [string, string, boolean];
 
     const userCnic = userProfile[1];
+    const isRegistered = userProfile[2];
 
-    if (!userCnic) {
+    if (!isRegistered || !userCnic) {
       return NextResponse.json({ error: "User is not registered on the Blockchain." }, { status: 400 });
     }
     console.log(`   - Identity Verified: ${userCnic}`);
@@ -109,8 +110,13 @@ export async function POST(request: Request) {
     // ---------------------------------------------------------
     // 7. EXECUTE MINTING (Admin pays Gas)
     // ---------------------------------------------------------
-    const ipfsHash = "ipfs://verified_" + landId;
-    const landType = 0; // 0 = Residential
+    // Use the IPFS hash from govt record if present, else derive from landId
+    const ipfsHash = (govtRecord.ipfs_hash as string | undefined) || `verified_${landId}`;
+
+    // Map land_type string to contract enum: 0=RESIDENTIAL 1=AGRICULTURAL 2=COMMERCIAL
+    const landTypeMap: Record<string, number> = { residential: 0, agricultural: 1, commercial: 2 };
+    const rawType = ((govtRecord.land_type as string | undefined) || '').toLowerCase();
+    const landType = landTypeMap[rawType] ?? 0;
 
     console.log("\\n=======================================================");
     console.log("🚀 MINTING TRANSACTION DETAILS (ADMIN WALLET)");
@@ -144,8 +150,9 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ success: true, txHash });
 
-  } catch (error: any) {
-    console.error("❌ API Error:", error);
-    return NextResponse.json({ error: error.message || "Internal Server Error" }, { status: 500 });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Internal Server Error';
+    console.error('❌ API Error:', message);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

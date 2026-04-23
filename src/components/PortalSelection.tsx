@@ -24,9 +24,8 @@ import {
 export default function PortalSelection() {
   const [mounted, setMounted] = useState(false);
   
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => { setMounted(true); }, []);
 
   const { address, isConnected } = useAccount();
   const router = useRouter();

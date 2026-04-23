@@ -29,7 +29,7 @@ export default function Footer() {
               <span className="font-bold tracking-tight text-white">LandLedger</span>
             </div>
             <p className="text-gray-500 text-sm leading-relaxed mb-5">
-              Pakistan's first blockchain-based land registry. Secure, transparent, and government-backed property records.
+              Pakistan&apos;s first blockchain-based land registry. Secure, transparent, and government-backed property records.
             </p>
           </div>
 
