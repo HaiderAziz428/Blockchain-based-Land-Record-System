@@ -59,11 +59,11 @@
 | **Project Title** | LandLedger: A Blockchain-Based Land Registry System |
 | **Token / Contract Name** | PakLandRegistry (PLR) — ERC-721 |
 | **Project Type** | Final Year Project (FYP) / Undergraduate Thesis |
-| **University** | _[Your University Name]_ |
-| **Department** | _[Department of Computer Science / Software Engineering]_ |
-| **Team Members** | _[Member 1 — Role], [Member 2 — Role], [Member 3 — Role]_ |
-| **Supervisor** | _[Supervisor Name, Designation]_ |
-| **Co-Supervisor** | _[If applicable]_ |
+| **University** | _Institute of Space Technology_ |
+| **Department** | _Department of Computer Science_ |
+| **Team Members** | _Muhammad Haidar Aziz, Muhammad Riyyan_ |
+| **Supervisor** | _[Mr.Haroon Ibrahim, lecturer]_ |
+| **Co-Supervisor** | _Ma’am Shakira Musa Baig_ |
 | **Submission Year** | 2026 |
 | **Project Duration** | 8 months (Sept 2025 — May 2026) |
 | **Deployed Network** | Ethereum Sepolia Testnet |
