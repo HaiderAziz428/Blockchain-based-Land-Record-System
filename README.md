@@ -73,60 +73,72 @@
 
 ## 🎯 Project Overview
 
-> **Tagline:** _"A tamper-proof, government-grade land ownership registry built on Ethereum smart contracts and IPFS — eliminating forgery, accelerating verification, and bringing transparent property transfer to citizens."_
+> **Tagline:** _"Replace the paper allotment letter with an unforgeable on-chain NFT — paperless ownership for new housing societies in Pakistan, from day one."_
 
 ### 🌍 Domain
-**Blockchain · Government Technology (GovTech) · Land Registry · Decentralized Identity · Real Estate**
+**Blockchain · Real Estate · Housing-Society Allotments · Decentralized Identity · GovTech**
+
+### 🎯 Who This Is For
+
+LandLedger targets **new private and semi-private housing developments in Pakistan** — not the legacy patwari/revenue-office system. Specifically:
+
+- **DHA (Defence Housing Authority)** phases — Lahore, Karachi, Islamabad, Multan, etc.
+- **Bahria Town** developments
+- **CDA / LDA** auctions for new sectors
+- **Private real-estate schemes** launching new societies
+
+These developers operate independently of the patwari system: they issue their own allotment letters, run their own transfer offices, and process their own succession cases. They are paperless-ready from day one — there is no legacy paper trail to migrate, only a fresh allotment to mint as an on-chain NFT.
 
 ### 🚨 Problem Statement
 
-Land record management in many developing economies — particularly Pakistan — suffers from systemic issues that cost citizens billions in lost property and decades of legal disputes:
+New housing societies in Pakistan are administratively independent of the legacy revenue system, but they suffer from their own well-documented fraud patterns. Anyone who has bought or sold a DHA file, a Bahria allotment, or a private-society plot in the last decade has heard of these:
 
-- **🔴 Record Forgery & Tampering:** Paper-based land deeds (*intiqal*, *fard*, *registry*) can be physically altered, duplicated, or fraudulently re-issued by corrupt registrars.
-- **🔴 Duplicate Registrations:** The same plot is sometimes sold to multiple buyers because there is no single, verifiable source of truth.
-- **🔴 Opaque Ownership History:** Buyers cannot independently verify a seller's claim of ownership; they rely on revenue-office clerks (*patwari*) whose records may be outdated or manipulated.
-- **🔴 Slow Manual Verification:** A typical property transfer in Pakistan takes **30–90 days** and requires multiple in-person visits to revenue offices.
-- **🔴 Inheritance Disputes:** Succession (*virsa*) cases often drag on for decades because heirs lack a transparent, tamper-proof process for splitting inherited land.
-- **🔴 Corruption:** Bribes for record retrieval, mutation entries, and dispute resolution are routine — undermining citizen trust.
+- **🔴 Allotment-letter forgery** — Paper allotment letters are physically altered, duplicated, or fabricated outright.
+- **🔴 "DHA file scams"** — Fraudsters sell plot files that are fake, already sold, or never legitimately allotted. Pakistani media regularly reports schemes running into hundreds of millions of rupees.
+- **🔴 Double allotment** — Corrupt developer staff issue two valid-looking files for the same plot.
+- **🔴 Ghost plots** — A plot exists on paper but not on the ground, or vice versa.
+- **🔴 Fake transfer letters** — Forged seller signatures move ownership without the seller's knowledge.
+- **🔴 Opaque inheritance** — Succession (*virsa*) cases over inherited plots drag on for years because heirs lack a transparent, tamper-proof process.
+- **🔴 No public verification** — A prospective secondary-market buyer cannot independently confirm "is this file real, who actually owns it, has it already been sold?" without going to the developer's transfer office.
 
 ### 💡 Why Blockchain?
 
-A traditional centralized database (even a well-built one) is fundamentally vulnerable: **whoever controls the database controls the truth**. Blockchain solves this asymmetry:
+A developer-controlled database is fundamentally as vulnerable as a paper file: **whoever controls the database controls the truth**, and a bribed staff member can silently edit ownership. Blockchain inverts this:
 
-| Property | Traditional DB | Blockchain (LandLedger) |
-|----------|---------------|------------------------|
+| Property | Developer DB / Paper File | Blockchain (LandLedger) |
+|----------|--------------------------|------------------------|
 | **Immutability** | ❌ Records can be silently edited | ✅ Cryptographically tamper-proof |
 | **Transparency** | ❌ Internal/closed | ✅ Publicly auditable transaction history |
-| **Single Point of Failure** | ❌ One DB admin = full control | ✅ No single party can rewrite history |
-| **Audit Trail** | ❌ Trust the audit log | ✅ Every transfer is a permanent on-chain event |
-| **Multi-party Trust** | ❌ Requires trusted intermediary | ✅ Trustless multi-signature workflows (e.g., inheritance) |
-| **Cryptographic Ownership** | ❌ Username/password | ✅ Wallet signatures — only the keyholder can transfer |
+| **Single Point of Failure** | ❌ One staff member with access = full control | ✅ No single party can rewrite history |
+| **Audit Trail** | ❌ Trust the developer's audit log | ✅ Every transfer is a permanent on-chain event |
+| **Multi-party Trust** | ❌ Requires the developer as trusted intermediary | ✅ Trustless multi-signature workflows (e.g., inheritance) |
+| **Cryptographic Ownership** | ❌ Paper signature / username + password | ✅ Wallet signatures — only the keyholder can transfer |
 
-By encoding land titles as **ERC-721 NFTs**, each plot becomes a unique, non-forgeable digital asset. Documents (deeds, maps, photos) are stored on **IPFS** so even the file content is content-addressed and immutable.
+By encoding allotments as **ERC-721 NFTs**, each plot becomes a unique, non-forgeable digital asset. Allotment letters, site plans, and listing photos are stored on **IPFS** so even the file content is content-addressed and immutable.
 
 ### 👥 Target Users
 
 | Role | Use Case |
 |------|----------|
-| **🧑‍💼 Citizens (Owners)** | Register, view, transfer, list-for-sale, and bequeath their land |
-| **🛒 Property Buyers** | Verify ownership and history before purchase; buy directly via marketplace |
-| **🏛️ Government Authority (CDA / LDA / DHA)** | Whitelisted institutional wallets that can hold and issue land |
-| **👨‍⚖️ Verification Backend (Govt Server)** | Cross-checks CNIC against civil registry before minting |
-| **🛡️ Contract Owner / Admin** | Manages government-authority whitelist; resolves locked disputes |
-| **⚖️ Lawyers & Auditors** | Read-only access to immutable transaction history |
+| **🧑‍💼 Allottees / Plot Owners** | Register, view, transfer, list-for-sale, and bequeath their plots |
+| **🛒 Secondary-Market Buyers** | Verify a file is real and currently owned by the seller before paying |
+| **🏛️ Developer (CDA / LDA / DHA / Bahria / Private)** | Whitelisted institutional wallet that allots and issues plot NFTs |
+| **👨‍⚖️ Verification Backend (Developer's Transfer Office)** | Cross-checks CNIC against the society's allotment registry before minting |
+| **🛡️ Contract Owner / Admin** | Manages developer-authority whitelist; resolves locked disputes |
+| **⚖️ Lawyers & Auditors** | Read-only access to immutable transaction history for inheritance / dispute cases |
 
 ---
 
 ## 🎯 Objectives
 
-1. **Design** a decentralized land registry where ownership records are stored as ERC-721 NFTs on Ethereum, eliminating dependence on centralized revenue databases.
-2. **Eliminate forgery and duplicate registrations** through cryptographic uniqueness — each `landId` deterministically maps to exactly one `tokenId` via `keccak256`.
-3. **Implement role-based access control** with four tiers: Contract Owner, Verification Backend (Oracle), Government Authorities, and Registered Citizens.
-4. **Enable transparent, time-locked property sales** via an on-chain marketplace with 7-day listing windows and reentrancy-safe ETH settlement.
-5. **Build a multi-party inheritance system** that requires 100% heir approval for succession, with a dispute mechanism that locks the asset until resolved.
-6. **Provide an immutable audit trail** of every ownership transfer with sale price (for tax transparency).
-7. **Build a citizen-friendly Web3 frontend** that abstracts wallet complexity — including hydration-safe SSR, transaction toasts, and IPFS document upload.
-8. **Cross-verify identities** against a mock government CNIC database before minting, demonstrating a realistic Govt-blockchain integration pattern.
+1. **Design** a decentralized allotment registry for new housing societies, where each plot is stored as an ERC-721 NFT on Ethereum — eliminating dependence on the developer's centralized database for trust.
+2. **Eliminate forged and duplicate allotments** through cryptographic uniqueness — each `landId` deterministically maps to exactly one `tokenId` via `keccak256`.
+3. **Implement role-based access control** with four tiers: Contract Owner, Verification Backend (the developer's transfer office), Developer/Government Authorities, and Registered Allottees.
+4. **Enable transparent, time-locked secondary-market sales** via an on-chain marketplace with 7-day listing windows and reentrancy-safe ETH settlement.
+5. **Build a multi-party inheritance system** that requires 100% heir approval for succession, with a dispute mechanism that locks the plot until resolved.
+6. **Provide an immutable audit trail** of every ownership transfer with sale price (for tax transparency and dispute mediation).
+7. **Build a buyer-friendly Web3 frontend** that abstracts wallet complexity — hydration-safe SSR, transaction toasts, and IPFS document upload.
+8. **Cross-verify identities** against a mock society allotment registry before minting, demonstrating a realistic developer-to-blockchain integration pattern.
 
 ---
 
@@ -134,19 +146,20 @@ By encoding land titles as **ERC-721 NFTs**, each plot becomes a unique, non-for
 
 ### ✅ In Scope
 
-- User registration linking wallet ↔ CNIC (national ID)
-- Backend-signed land record minting (Oracle pattern)
+- Allottee registration linking wallet ↔ CNIC
+- Backend-signed plot allotment minting (Oracle pattern)
 - On-chain ownership transfer with sale-price logging
-- Marketplace: list, buy (payable), cancel — with 7-day expiry
+- Secondary-market: list, buy (payable), cancel — with 7-day expiry
 - Multi-heir inheritance with approval/dispute voting
-- Government authority whitelist management
-- IPFS document upload for land deeds and listing photos
-- Paginated admin dashboard reading all land records
-- Per-wallet user dashboard for owned land
+- Developer / Government authority whitelist management
+- IPFS upload for allotment letters, site plans, and listing photos
+- Paginated admin dashboard reading all plot records
+- Per-wallet allottee dashboard
 
 ### ❌ Out of Scope
 
-- Physical land surveying or GIS coordinate verification
+- Migration of legacy patwari / revenue-office paper records (a separate, much larger problem)
+- Physical surveying or GIS coordinate verification of plot boundaries
 - Legal arbitration of disputed cases (handled off-chain by judiciary)
 - Mainnet deployment (currently Sepolia testnet only)
 - Mobile native applications (web-only interface)
@@ -900,18 +913,19 @@ flowchart LR
 
 > 📝 _Numbers above are placeholder targets; populate with real measurements from your gas-reporter run before submission._
 
-### LandLedger vs Traditional Land Registry (Pakistan Context)
+### LandLedger vs Traditional Society Allotment (Pakistan Context — DHA / Bahria / Private)
 
-| Criterion | Traditional Pakistan System | LandLedger |
-|-----------|----------------------------|-----------|
-| **Transfer time** | 30–90 days | ~ 1 minute |
-| **Verification cost** | Multiple visits + bribes | Free (anyone can `getLandRecord`) |
-| **Forgery resistance** | Paper deeds — easily faked | Cryptographic NFT — impossible to forge |
-| **Audit trail** | Patwari ledger (mutable) | Permanent on-chain history |
-| **Multi-heir inheritance** | Court cases (years) | Smart-contract voting (days) |
-| **Cross-region access** | In-person visits required | Web/wallet anywhere |
-| **Trust model** | Trust the patwari | Trust mathematics |
-| **Cost (per transfer)** | PKR 5,000–50,000+ in fees & bribes | < PKR 200 (gas on L2) |
+| Criterion | Traditional Society Transfer Office | LandLedger |
+|-----------|------------------------------------|-----------|
+| **Transfer time** | 2–8 weeks (NDC + transfer letter + verification queue) | ~ 1 minute |
+| **Verification cost** | In-person visit to transfer office, often with informal fees | Free (anyone can `getLandRecord`) |
+| **Forgery resistance** | Paper allotment / transfer letters — routinely forged | Cryptographic NFT — impossible to forge |
+| **Audit trail** | Developer's internal ledger (editable by staff) | Permanent on-chain history |
+| **Multi-heir inheritance** | Court cases dragging on for years | Smart-contract voting (days) |
+| **Cross-region access** | In-person visit to society office | Web/wallet anywhere |
+| **Trust model** | Trust the developer's transfer office | Trust mathematics |
+| **Cost (per transfer)** | PKR 25,000–200,000+ in fees & informal payments | < PKR 200 (gas on L2) |
+| **DHA-file scam risk** | High — buyers cannot verify file authenticity independently | Eliminated — every file's status is publicly readable on-chain |
 
 ### Usability Testing (Pilot — 5 users)
 

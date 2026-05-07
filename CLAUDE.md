@@ -7,11 +7,13 @@
 
 ## 1. Executive Summary
 
-**LandLedger** (codebase: *fyp-blockchain-based-land-system*) is a **fully decentralized land registry** built on the Ethereum Sepolia testnet. It addresses real-world land-record fraud, opaque ownership history, and the corruption-prone manual transfer process that plagues land administration in developing economies — particularly Pakistan.
+**LandLedger** (codebase: *fyp-blockchain-based-land-system*) is a **fully decentralized land registry** built on the Ethereum Sepolia testnet, **targeted at new private and semi-private housing developments in Pakistan** — DHA, Bahria Town, CDA/LDA new sectors, and private real-estate schemes — that issue plot allotments paperless from day one.
 
-The system encodes each land parcel as an **ERC-721 NFT** — making ownership cryptographically unforgeable — and stores all supporting documents (deeds, photos, listing metadata) on **IPFS via Pinata**, so the file content itself is content-addressed and tamper-evident. A single Supabase instance simulates the **pre-existing government civil registry** (CNIC database + revenue-office land records) — this is a *mock* of an existing govt system, not a database the DApp depends on for trust.
+LandLedger does **not** attempt to migrate Pakistan's century-old patwari paper-record system onto the blockchain. That is a multi-decade political project, not an engineering scope. Instead, LandLedger replaces the *paper allotment letter* — the document that fraudsters forge, duplicate, and resell in DHA-file and Bahria-file scams — with a cryptographically unforgeable on-chain record.
 
-**Bottom line:** ownership lives on-chain. Documents live on IPFS. Government data is a one-way *input* used to verify identity at mint time. No off-chain database is in the trust path of the marketplace.
+The system encodes each plot as an **ERC-721 NFT** — making ownership cryptographically unforgeable — and stores all supporting documents (allotment letters, site plans, listing photos) on **IPFS via Pinata**, so the file content itself is content-addressed and tamper-evident. A single Supabase instance simulates the **society's allotment registry** (the developer's own CNIC-keyed list of who has been allotted which plot) — this is a *mock* of the developer's existing internal system, not a database the DApp depends on for trust.
+
+**Bottom line:** ownership lives on-chain. Documents live on IPFS. The society allotment registry is a one-way *input* used to verify a buyer's identity and entitlement at mint time. No off-chain database is in the trust path of the marketplace.
 
 | Quick fact | Value |
 |------------|-------|
@@ -28,35 +30,49 @@ The system encodes each land parcel as an **ERC-721 NFT** — making ownership c
 
 ## 2. The Problem We Are Solving
 
-### 2.1 Domain context
+### 2.1 The market we target
 
-Land records in many South-Asian jurisdictions (especially Pakistan) are still managed by paper-based revenue offices. The *patwari* (revenue clerk) maintains the *fard* (ownership record), the *intiqal* (mutation entry), and physical sale deeds. This system has known systemic failures:
+LandLedger targets **new private and semi-private housing developments in Pakistan** — the kind that issue plots through allotment letters rather than through the patwari/revenue office. The most prominent examples:
+
+- **DHA (Defence Housing Authority)** phases in Lahore, Karachi, Islamabad, Multan, etc.
+- **Bahria Town** developments
+- **CDA / LDA** auctions for new sectors
+- **Private real-estate schemes** launching new societies
+
+These developers operate **administratively independent of the patwari system**. They maintain their own allotment registries, issue their own allotment letters, run their own transfer offices, and process their own succession cases. They are paperless-ready: there is no legacy paper record to migrate, only a fresh allotment to mint.
+
+### 2.2 The pain point — fraud in new societies
+
+Even though new societies are independent of the legacy revenue system, they suffer from their own well-documented fraud patterns. Anyone who has bought or sold a DHA file in the last decade has heard of these:
 
 | Issue | Real-world consequence |
 |-------|------------------------|
-| Forged or duplicated deeds | The same plot is "sold" to multiple buyers |
-| Mutable ledgers | Ownership is silently rewritten by corrupt officials |
-| No public verification | Buyers cannot independently confirm ownership |
-| Slow transfers | A typical mutation takes 30–90 days, with multiple in-person visits |
-| Opaque inheritance | Succession (*virsa*) cases drag on for years in courts |
-| Bribery | Petty corruption is a routine part of every transaction |
+| Forged or duplicated allotment letters | The same plot file is sold to multiple buyers ("DHA file scam") |
+| Double allotment by corrupt staff | Two valid-looking files exist for the same plot |
+| Ghost plots | The plot exists on paper but not on the ground (or vice versa) |
+| Fake transfer letters | Forged seller signatures move ownership without the seller knowing |
+| Opaque inheritance | Succession (*virsa*) cases over inherited plots drag on for years |
+| No public verification | Secondary-market buyers cannot independently confirm "is this file real, who actually owns it, has it already been sold?" |
 
-### 2.2 Why blockchain (and not "just a better database")
+These are not theoretical risks — the Pakistani print and digital media regularly report scams running into hundreds of millions of rupees in DHA, Bahria Town, and private-society plot files.
 
-A centralised database — no matter how well-engineered — concentrates trust in whoever administers it. The same root vulnerability that allows a *patwari* to forge a *fard* applies to a hypothetical government Postgres cluster: **whoever controls the DB controls the truth.**
+### 2.3 Why blockchain (and not "just a better database")
 
-Blockchain inverts this: **no single party can rewrite history** because every node enforces the same immutable rules. By making ownership itself an on-chain ERC-721 NFT, we get four properties traditional DBs cannot provide:
+A centralised database — no matter how well-engineered — concentrates trust in whoever administers it. A developer's internal allotment database can be edited by a corrupt staff member just as easily as a paper ledger can be forged: **whoever controls the DB controls the truth.**
+
+Blockchain inverts this: **no single party can rewrite history** because every node enforces the same immutable rules. By making the allotment itself an on-chain ERC-721 NFT, we get four properties a developer-controlled database cannot provide:
 
 1. **Immutability** — every transfer is permanent and cryptographically signed.
-2. **Public verifiability** — anyone with an internet connection can query ownership for free.
-3. **Programmable rules** — multi-heir voting, time-locked listings, dispute locking are enforced by code, not officials.
-4. **Cryptographic ownership** — only the keyholder can transfer; no clerk can "make a mistake."
+2. **Public verifiability** — any prospective buyer can query "who really owns plot 42, Phase 9?" for free, without going to the developer's office.
+3. **Programmable rules** — multi-heir succession voting, time-locked listings, and dispute-locking are enforced by code, not by transfer-office clerks.
+4. **Cryptographic ownership** — only the keyholder can transfer; no clerk can "make a mistake," and no forged letter can move a plot.
 
-### 2.3 What this project *is not*
+### 2.4 What this project *is not*
 
 - **Not a replacement for the judiciary.** Disputes still need legal arbitration; we provide the on-chain lock + audit trail to support that process.
-- **Not a GIS / surveying platform.** Plot boundaries are still determined off-chain.
-- **Not a mainnet-ready production system.** Sepolia deployment, faucet ETH, and mock govt DB make this a research-grade prototype.
+- **Not a replacement for the patwari system.** Migrating Pakistan's century-old legacy land records is a separate, much larger problem out of scope for this thesis. We address new developments with no legacy baggage.
+- **Not a GIS / surveying platform.** Plot boundaries are still determined off-chain by the developer's site plan.
+- **Not a mainnet-ready production system.** Sepolia deployment, faucet ETH, and a mock allotment registry make this a research-grade prototype that demonstrates the architecture; mainnet (or Layer-2) deployment would require partnership with a real developer.
 
 ---
 
@@ -129,7 +145,7 @@ What actually moved:
 - ✅ Listing metadata JSON (`{name, description, location, area, photos[], whatsapp}`) pinned to IPFS in the same modal.
 - ✅ `marketplace/page.tsx` reads listings entirely from chain + hydrates JSON from IPFS at display time.
 
-The govt Supabase instance **stays** because it represents the mock pre-existing govt system being onboarded. After purchase, ownership is synced back to `govt_land_records.owner_cnic` (best-effort, non-critical) so the govt system reflects current owners — but the chain is authoritative.
+The Supabase instance **stays** because it represents the developer's mock allotment registry — the existing CNIC-keyed list of who has been allotted which plot. After purchase, ownership is synced back to `govt_land_records.owner_cnic` (best-effort, non-critical) so the developer's internal records reflect current owners — but the chain is authoritative. (The table name is a legacy of the original framing; semantically it is now the *society allotment registry*.)
 
 ---
 
@@ -633,20 +649,22 @@ Integration Testing → Security Review → Evaluation & Comparison → Document
 
 **Current limitations:**
 - Sepolia testnet only; real-world deployment would need a Layer-2 (Polygon, Arbitrum) for sub-cent gas.
-- Govt DB is a **mock** — production would integrate the actual NADRA / provincial Board-of-Revenue APIs.
+- Allotment registry is a **mock** — production would integrate the developer's actual transfer-office API (DHA's, Bahria Town's, etc.) and CNIC verification via NADRA.
 - Pinata API keys are client-exposed — should be moved to a server route.
-- No private key recovery — if a citizen loses their seed phrase, they lose their land. Future: ERC-4337 account abstraction with social recovery.
+- No private key recovery — if an allottee loses their seed phrase, they lose their plot. Future: ERC-4337 account abstraction with social recovery.
 - IPFS gateway latency can be 1-3s — cards render with placeholders if a fetch is slow.
 
 **Future work:**
+- **Pilot deployment with a single developer phase** (e.g., one DHA phase or a private society launch) — the most realistic path to production.
+- Extension to legacy patwari records — the much larger problem we deliberately scoped out of this thesis.
 - Native mobile (React Native + WalletConnect Mobile SDK).
 - The Graph subgraph for fast indexed event queries.
-- AI-based deed-forgery detection (vision model over uploaded scans).
+- AI-based allotment-letter forgery detection (vision model over uploaded scans).
 - Multi-language UI (Urdu, Sindhi, Punjabi, Pashto, English).
 - ZK-CNIC proofs (verify citizenship without revealing CNIC on-chain).
 - DAO-based dispute resolution (community jurors stake to vote, replacing single-admin escape hatch).
 - Mortgage / lien primitive (lock NFT to lending contract).
-- GIS map integration (Leaflet/Mapbox parcel boundary overlay).
+- GIS map integration (Leaflet/Mapbox parcel boundary overlay against the society's site plan).
 
 ---
 
@@ -730,16 +748,16 @@ The frontend follows a small, consistent design language. Use the existing utili
 | Term | Meaning |
 |------|---------|
 | **CNIC** | Computerised National Identity Card (Pakistan's national ID) |
-| **Patwari** | Village-level revenue clerk who maintains paper land records |
-| **Fard** | Official ownership record document |
-| **Intiqal** | Mutation entry — recording transfer of ownership |
-| **Virsa** | Inheritance/succession |
-| **CDA / DHA / LDA** | Capital / Defence / Lahore Development Authority — institutional landholders in Pakistan |
-| **NADRA** | National Database & Registration Authority — Pakistan's civil registry |
+| **Allotment letter** | The paper document a developer issues confirming a buyer has been allotted a specific plot — the artefact LandLedger replaces with an on-chain NFT |
+| **DHA file scam** | Catch-all term for fraud involving fake/duplicated/forged DHA allotment files in the Pakistani secondary market — the headline pain point this project addresses |
+| **Society allotment registry** | The developer's internal CNIC-keyed list of who has been allotted which plot. Simulated in this codebase by the `govt_land_records` Supabase table (legacy name) |
+| **CDA / DHA / LDA** | Capital / Defence / Lahore Development Authority — the largest institutional developers and our primary target adopters |
+| **NADRA** | National Database & Registration Authority — Pakistan's civil registry; would issue real CNIC verification in a production deployment |
+| **Patwari / Fard / Intiqal / Virsa** | Patwari = village-level revenue clerk; fard = paper ownership record; intiqal = mutation entry; virsa = inheritance. These belong to the **legacy** revenue system, deliberately *out of scope* for LandLedger — included here only as background context |
 | **CID** | Content Identifier — IPFS's content-addressed hash |
-| **Backend (in contract terms)** | The wallet whose private key is `ADMIN_PRIVATE_KEY`; corresponds to `verificationBackend` on-chain |
+| **Backend (in contract terms)** | The wallet whose private key is `ADMIN_PRIVATE_KEY`; corresponds to `verificationBackend` on-chain. In production this is operated by the developer's transfer office |
 | **`onlyBackend`** | Solidity modifier restricting a function to that backend wallet |
-| **Govt Authority** | Whitelisted institutional wallet — can hold land without a personal CNIC |
+| **Govt Authority** | Whitelisted institutional wallet — can hold a plot without a personal CNIC. Used for the developer itself and for institutional buyers (corporates, trusts) |
 
 ---
 
