@@ -9,7 +9,7 @@ export default function Home() {
 
       <Navbar />
 
-      <main className="relative z-10">
+      <main className="relative z-10 home-stagger">
         <Hero />
         <PortalSelection />
       </main>

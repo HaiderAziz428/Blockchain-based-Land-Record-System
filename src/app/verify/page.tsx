@@ -1,12 +1,13 @@
 'use client';
 
 import { useState } from 'react';
-import { useReadContract, usePublicClient } from 'wagmi'; // Import usePublicClient
-import { parseAbiItem } from 'viem'; // Import viem helper
+import { useReadContract, usePublicClient } from 'wagmi';
+import { parseAbiItem } from 'viem';
 import { CONTRACT_ABI, CONTRACT_ADDRESS } from '@/src/utils/contract';
-import Header from '@/src/components/Header';
+import Navbar from '@/src/components/Navbar';
+import { Search, Loader2, CheckCircle2, AlertCircle, ExternalLink, FileText, ShieldCheck, ShieldAlert, Clock } from 'lucide-react';
 
-const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 interface HistoryEvent {
   type: 'MINT' | 'TRANSFER';
@@ -14,8 +15,13 @@ interface HistoryEvent {
   to: string;
   txHash: string;
   blockNumber: bigint;
-  date?: string; // We will try to fetch timestamp
 }
+
+const STATUS_META: Record<number, { label: string; tone: string; icon: React.ComponentType<{ size?: number; className?: string }> }> = {
+  0: { label: 'Active', tone: 'bg-green-500/10 text-green-400 border-green-500/20', icon: CheckCircle2 },
+  1: { label: 'Pending Inheritance', tone: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20', icon: Clock },
+  2: { label: 'Locked / Disputed', tone: 'bg-red-500/10 text-red-400 border-red-500/20', icon: ShieldAlert },
+};
 
 export default function VerifyPage() {
   const [searchId, setSearchId] = useState('');
@@ -23,56 +29,49 @@ export default function VerifyPage() {
   const [history, setHistory] = useState<HistoryEvent[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
-  // Wagmi Client to fetch logs
   const publicClient = usePublicClient();
 
-  // 1. READ CURRENT STATE
   const { data: landRecord, isLoading, isError } = useReadContract({
     address: CONTRACT_ADDRESS,
     abi: CONTRACT_ABI,
     functionName: 'getLandRecord',
     args: queryId ? [queryId] : undefined,
-    query: { enabled: !!queryId, retry: false }
+    query: { enabled: !!queryId, retry: false },
   });
 
-  // 2. FETCH HISTORY LOGS
   const fetchHistory = async (landId: string) => {
     if (!publicClient) return;
     setLoadingHistory(true);
     setHistory([]);
 
     try {
-      // A. Fetch 'LandTransferred' Events
       const transferLogs = await publicClient.getLogs({
         address: CONTRACT_ADDRESS,
         event: parseAbiItem('event LandTransferred(string landId, address indexed from, address indexed to, uint256 price)'),
-        fromBlock: 'earliest'
+        fromBlock: 'earliest',
       });
 
-      // B. Fetch 'LandMinted' Events
       const mintLogs = await publicClient.getLogs({
         address: CONTRACT_ADDRESS,
         event: parseAbiItem('event LandMinted(address indexed owner, string landId, uint8 lType, uint256 tokenId)'),
-        fromBlock: 'earliest'
+        fromBlock: 'earliest',
       });
 
       const events: HistoryEvent[] = [];
 
-      // Filter & Format Mints
       for (const log of mintLogs) {
         if ((log.args as Record<string, unknown>).landId === landId) {
           events.push({
             type: 'MINT',
-            from: 'GOVT', // Minted by Govt
+            from: 'GOVT',
             // @ts-expect-error -- wagmi type inference
             to: log.args.owner,
             txHash: log.transactionHash,
-            blockNumber: log.blockNumber
+            blockNumber: log.blockNumber,
           });
         }
       }
 
-      // Filter & Format Transfers
       for (const log of transferLogs) {
         if ((log.args as Record<string, unknown>).landId === landId) {
           events.push({
@@ -82,17 +81,15 @@ export default function VerifyPage() {
             // @ts-expect-error -- wagmi type inference
             to: log.args.to,
             txHash: log.transactionHash,
-            blockNumber: log.blockNumber
+            blockNumber: log.blockNumber,
           });
         }
       }
 
-      // Sort by Block Number (Newest First)
       events.sort((a, b) => Number(b.blockNumber - a.blockNumber));
-
       setHistory(events);
     } catch (e) {
-      console.error("Error fetching history:", e);
+      console.error('Error fetching history:', e);
     } finally {
       setLoadingHistory(false);
     }
@@ -100,124 +97,197 @@ export default function VerifyPage() {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchId) return;
-    setQueryId(searchId);
-    fetchHistory(searchId); // Trigger History Fetch
-  };
-
-  const getStatusString = (statusIdx: number) => {
-    const statuses = ['Active ✅', 'Pending Inheritance ⚠️', 'Locked / Disputed ⛔'];
-    return statuses[statusIdx] || 'Unknown';
+    if (!searchId.trim()) return;
+    setQueryId(searchId.trim());
+    fetchHistory(searchId.trim());
   };
 
   const isValidRecord = landRecord && (landRecord as Record<string, unknown>).currentOwner !== ZERO_ADDRESS;
+  const record = landRecord as Record<string, unknown> | undefined;
+
+  const shorten = (addr: string) => addr.length > 16 ? `${addr.slice(0, 8)}…${addr.slice(-6)}` : addr;
 
   return (
-    <div className="min-h-screen bg-[#020817] text-white">
-      <Header />
-      
-      <main className="pt-32 px-6 max-w-5xl mx-auto text-center">
-        <h1 className="text-4xl font-bold mb-4 bg-gradient-to-r from-green-400 to-blue-500 bg-clip-text text-transparent">
-          Public Land Verification
-        </h1>
-        <p className="text-gray-400 mb-8">
-          Verify property ownership and view the complete Chain of Title.
-        </p>
+    <div className="min-h-screen bg-brand-dark text-white">
+      <Navbar />
 
-        {/* Search Bar */}
-        <form onSubmit={handleSearch} className="flex gap-2 max-w-lg mx-auto mb-12">
-          <input 
-            type="text" 
-            placeholder="Enter Plot Number (e.g. Plot-101)" 
-            value={searchId}
-            onChange={(e) => setSearchId(e.target.value)}
-            className="flex-1 bg-[#1e293b] border border-gray-700 rounded-lg p-4 text-white focus:outline-none focus:border-blue-500"
-          />
-          <button 
+      <main className="mx-auto w-full max-w-5xl px-6 py-12 md:px-10">
+
+        {/* Header */}
+        <div className="text-center mb-10">
+          <div className="inline-flex items-center gap-2 bg-white/5 border border-white/10 text-gray-400 px-3 py-1 rounded-full text-[11px] font-medium mb-5">
+            <ShieldCheck size={12} className="text-indigo-400" />
+            Public On-Chain Verification
+          </div>
+          <h1 className="text-3xl md:text-4xl font-bold tracking-tight mb-3">
+            Verify Land Ownership
+          </h1>
+          <p className="text-gray-400 text-sm md:text-base max-w-xl mx-auto leading-relaxed">
+            Look up any registered parcel and view its complete chain of title — straight from the
+            blockchain. No login required.
+          </p>
+        </div>
+
+        {/* Search bar */}
+        <form
+          onSubmit={handleSearch}
+          className="flex flex-col sm:flex-row gap-2 max-w-xl mx-auto mb-10"
+        >
+          <div className="relative flex-1">
+            <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" />
+            <input
+              type="text"
+              placeholder="Enter Land ID (e.g. LND-001)"
+              value={searchId}
+              onChange={(e) => setSearchId(e.target.value)}
+              className="w-full bg-black/30 border border-white/10 rounded-lg pl-11 pr-4 py-3 text-white text-sm font-mono outline-none focus:border-indigo-500"
+            />
+          </div>
+          <button
             type="submit"
-            className="bg-blue-600 hover:bg-blue-700 px-8 py-4 rounded-lg font-bold transition-all"
+            disabled={!searchId.trim() || isLoading}
+            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 px-6 py-3 rounded-lg text-sm font-semibold transition-colors flex items-center justify-center gap-2"
           >
+            {isLoading ? <Loader2 size={15} className="animate-spin" /> : <Search size={15} />}
             Verify
           </button>
         </form>
 
-        {/* --- RESULT SECTION --- */}
-        
-        {(!isLoading && queryId && (isError || !isValidRecord)) && (
-            <div className="bg-red-500/10 border border-red-500/20 p-8 rounded-xl">
-                <h3 className="text-xl font-bold text-red-400">Record Not Found</h3>
-            </div>
+        {/* States */}
+        {!queryId && (
+          <div className="max-w-xl mx-auto text-center text-xs text-gray-600">
+            Tip: Land IDs follow the format your government registry uses — typically a string like
+            <span className="font-mono text-gray-500"> LND-001</span>.
+          </div>
         )}
 
-        {isValidRecord && (
-          <div className="grid md:grid-cols-3 gap-8 text-left">
-            
-            {/* LEFT: CURRENT STATE (The Card) */}
-            <div className="md:col-span-1 bg-[#1e293b] border border-blue-500/30 p-6 rounded-2xl h-fit">
-              <div className="flex justify-between items-start border-b border-white/10 pb-4 mb-4">
-                <h2 className="text-xl font-bold">Current Title</h2>
-                <span className="text-green-400 text-xs border border-green-500/50 px-2 py-1 rounded">Verified</span>
+        {!isLoading && queryId && (isError || !isValidRecord) && (
+          <div className="max-w-xl mx-auto bg-red-500/10 border border-red-500/20 rounded-xl p-6 flex items-start gap-3">
+            <AlertCircle size={20} className="text-red-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-semibold text-red-300">Record not found</p>
+              <p className="text-xs text-red-400/80 mt-1">
+                No land record exists on-chain for ID <span className="font-mono">{queryId}</span>.
+                Check the spelling and try again.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {isValidRecord && record && (
+          <div className="grid md:grid-cols-3 gap-6 text-left">
+
+            {/* Current title card */}
+            <div className="md:col-span-1 surface p-6 rounded-2xl h-fit">
+              <div className="flex justify-between items-start border-b border-white/5 pb-4 mb-4">
+                <h2 className="text-lg font-semibold tracking-tight">Current Title</h2>
+                {(() => {
+                  const meta = STATUS_META[Number(record.status)] ?? STATUS_META[0];
+                  const Icon = meta.icon;
+                  return (
+                    <span className={`pill border ${meta.tone}`}>
+                      <Icon size={11} /> {meta.label}
+                    </span>
+                  );
+                })()}
               </div>
-              
+
               <div className="space-y-4">
                 <div>
-                  <label className="text-xs text-gray-500">Current Owner</label>
-                  <p className="text-sm font-mono text-blue-300 break-all">{(landRecord as Record<string, unknown>).currentOwner as string}</p>
+                  <label className="text-[11px] text-gray-500 uppercase tracking-wide">Current Owner</label>
+                  <p className="text-sm font-mono text-indigo-300 break-all mt-0.5">
+                    {record.currentOwner as string}
+                  </p>
                 </div>
                 <div>
-                  <label className="text-xs text-gray-500">CNIC</label>
-                  <p className="text-lg font-mono">{(landRecord as Record<string, unknown>).cnic as string}</p>
+                  <label className="text-[11px] text-gray-500 uppercase tracking-wide">CNIC</label>
+                  <p className="text-sm font-mono text-gray-200 mt-0.5">
+                    {record.cnic as string}
+                  </p>
                 </div>
                 <div>
-                  <label className="text-xs text-gray-500">Status</label>
-                  <p className="font-bold">{getStatusString((landRecord as Record<string, unknown>).status as number)}</p>
+                  <label className="text-[11px] text-gray-500 uppercase tracking-wide">Land ID</label>
+                  <p className="text-sm font-mono text-gray-200 mt-0.5">
+                    {record.landId as string}
+                  </p>
                 </div>
                 <div>
-                    <a
-                      href={`https://gateway.pinata.cloud/ipfs/${(landRecord as Record<string, unknown>).ipfsHash as string}`}
-                      target="_blank"
-                      className="block w-full text-center bg-white/5 hover:bg-white/10 py-2 rounded border border-white/10 text-sm mt-4"
-                    >
-                      📄 View Original Deed
-                    </a>
+                  <label className="text-[11px] text-gray-500 uppercase tracking-wide">Verified On</label>
+                  <p className="text-sm text-gray-300 mt-0.5">
+                    {new Date(Number(record.verifiedAt) * 1000).toLocaleDateString(undefined, {
+                      year: 'numeric', month: 'short', day: 'numeric',
+                    })}
+                  </p>
                 </div>
+                {record.ipfsHash ? (
+                  <a
+                    href={`https://gateway.pinata.cloud/ipfs/${record.ipfsHash as string}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-2 flex items-center justify-center gap-2 w-full py-2.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-sm font-medium text-gray-200 transition-colors"
+                  >
+                    <FileText size={14} /> View Original Deed
+                  </a>
+                ) : null}
               </div>
             </div>
 
-            {/* RIGHT: HISTORY TIMELINE (The Blockchain Magic) */}
-            <div className="md:col-span-2 bg-[#1e293b] border border-white/10 p-6 rounded-2xl">
-              <h2 className="text-xl font-bold mb-6">Chain of Title (Ownership History)</h2>
-              
-              {loadingHistory ? (
-                <div className="text-gray-400 animate-pulse">Tracing Blockchain Events...</div>
-              ) : history.length === 0 ? (
-                <div className="text-gray-500">No history found (This implies a fresh mint).</div>
-              ) : (
-                <div className="space-y-0 relative border-l-2 border-gray-700 ml-3">
-                  {history.map((event, i) => (
-                    <div key={event.txHash + i} className="mb-8 ml-6 relative">
-                      {/* Timeline Dot */}
-                      <div className={`absolute -left-[31px] top-0 w-4 h-4 rounded-full border-2 border-[#1e293b] ${event.type === 'MINT' ? 'bg-green-500' : 'bg-blue-500'}`}></div>
-                      
-                      <div className="bg-white/5 p-4 rounded-lg border border-white/5 hover:border-white/20 transition-all">
-                        <div className="flex justify-between items-start mb-2">
-                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${event.type === 'MINT' ? 'bg-green-500/20 text-green-400' : 'bg-blue-500/20 text-blue-400'}`}>
-                                {event.type === 'MINT' ? '🏛️ GOVT ISSUANCE' : '🔁 OWNERSHIP TRANSFER'}
-                            </span>
-                            <a href={`https://sepolia.etherscan.io/tx/${event.txHash}`} target="_blank" className="text-xs text-gray-500 hover:text-blue-400 underline">
-                                {event.txHash.slice(0, 10)}...
-                            </a>
-                        </div>
+            {/* History timeline */}
+            <div className="md:col-span-2 surface p-6 rounded-2xl">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-lg font-semibold tracking-tight">Chain of Title</h2>
+                <span className="text-[11px] text-gray-500">
+                  {history.length} event{history.length === 1 ? '' : 's'}
+                </span>
+              </div>
 
+              {loadingHistory ? (
+                <div className="flex items-center gap-2 text-sm text-gray-400">
+                  <Loader2 size={14} className="animate-spin" /> Tracing blockchain events…
+                </div>
+              ) : history.length === 0 ? (
+                <p className="text-sm text-gray-500">
+                  No on-chain events found for this land yet.
+                </p>
+              ) : (
+                <div className="relative border-l-2 border-white/10 ml-3">
+                  {history.map((event, i) => (
+                    <div key={event.txHash + i} className="mb-7 ml-6 relative last:mb-0">
+                      <div
+                        className={`absolute -left-[31px] top-1.5 w-3.5 h-3.5 rounded-full border-2 border-[#0a0b1e] ${
+                          event.type === 'MINT' ? 'bg-green-500' : 'bg-indigo-500'
+                        }`}
+                      />
+                      <div className="bg-white/[0.03] hover:bg-white/[0.05] p-4 rounded-lg border border-white/[0.05] transition-colors">
+                        <div className="flex flex-wrap justify-between items-center gap-2 mb-3">
+                          <span
+                            className={`pill ${
+                              event.type === 'MINT'
+                                ? 'bg-green-500/15 text-green-300'
+                                : 'bg-indigo-500/15 text-indigo-300'
+                            }`}
+                          >
+                            {event.type === 'MINT' ? 'Government Issuance' : 'Ownership Transfer'}
+                          </span>
+                          <a
+                            href={`https://sepolia.etherscan.io/tx/${event.txHash}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[11px] text-gray-500 hover:text-indigo-300 flex items-center gap-1 font-mono"
+                          >
+                            <ExternalLink size={10} />
+                            {event.txHash.slice(0, 10)}…
+                          </a>
+                        </div>
                         <div className="grid grid-cols-2 gap-4 text-sm">
-                            <div>
-                                <span className="block text-gray-500 text-xs">From</span>
-                                <span className="font-mono text-gray-300">{event.from.slice(0, 8)}...</span>
-                            </div>
-                            <div>
-                                <span className="block text-gray-500 text-xs">To</span>
-                                <span className="font-mono text-white">{event.to.slice(0, 8)}...</span>
-                            </div>
+                          <div>
+                            <span className="block text-[11px] text-gray-500 uppercase tracking-wide">From</span>
+                            <span className="font-mono text-gray-300">{shorten(event.from)}</span>
+                          </div>
+                          <div>
+                            <span className="block text-[11px] text-gray-500 uppercase tracking-wide">To</span>
+                            <span className="font-mono text-white">{shorten(event.to)}</span>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -225,7 +295,6 @@ export default function VerifyPage() {
                 </div>
               )}
             </div>
-
           </div>
         )}
       </main>

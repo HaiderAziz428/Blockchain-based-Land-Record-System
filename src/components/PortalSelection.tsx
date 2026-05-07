@@ -32,6 +32,7 @@ export default function PortalSelection() {
 
   const [isModalOpen, setModalOpen] = useState(false);
   const [isChecking, setIsChecking] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const { data: userData, isLoading: isBlockchainLoading } = useReadContract({
     address: CONTRACT_ADDRESS as `0x${string}`,
@@ -43,9 +44,10 @@ export default function PortalSelection() {
 
   const handleUserPortalClick = async () => {
     if (!isConnected) {
-      alert("Please connect your wallet first using the Connect button in the Navbar.");
+      setNotice('Connect your wallet first — use the Connect button in the top-right corner.');
       return;
     }
+    setNotice(null);
     setIsChecking(true);
     const profile = userData as readonly [string, string, boolean] | undefined;
     const isRegistered = Boolean(profile?.[2]);
@@ -64,9 +66,10 @@ export default function PortalSelection() {
 
   const handleAdminPortalClick = () => {
     if (!isConnected) {
-      alert("Please connect your wallet first!");
+      setNotice('Connect your wallet first — use the Connect button in the top-right corner.');
       return;
     }
+    setNotice(null);
     router.push('/dashboard/admin');
   };
 
@@ -78,7 +81,7 @@ export default function PortalSelection() {
   ];
 
   return (
-    <section className="px-6 md:px-12 py-16">
+    <section id="portals" className="px-6 md:px-12 py-16 scroll-mt-20">
 
       {/* Section header */}
       <div className="text-center mb-12">
@@ -92,6 +95,14 @@ export default function PortalSelection() {
           Select the appropriate access portal. All interactions are secured on-chain and require a connected wallet.
         </p>
       </div>
+
+      {/* Inline notice (replaces native alert) */}
+      {notice && (
+        <div className="max-w-2xl mx-auto mb-6 px-4 py-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-200 text-sm flex items-start gap-2.5">
+          <Lock size={14} className="mt-0.5 flex-shrink-0" />
+          <span>{notice}</span>
+        </div>
+      )}
 
       {/* Portal Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5 max-w-4xl mx-auto mb-10">
@@ -154,6 +165,13 @@ export default function PortalSelection() {
           onClick={handleAdminPortalClick}
           className="group relative cursor-pointer rounded-xl border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.12] transition-colors duration-200 p-7 overflow-hidden"
         >
+          {!mounted && (
+            <div className="absolute inset-0 bg-[#0a0b1e]/85 backdrop-blur-sm flex flex-col items-center justify-center z-20 rounded-2xl">
+              <Loader2 className="animate-spin text-indigo-400 mb-2" size={28} />
+              <p className="text-xs text-gray-400 font-medium">Initializing…</p>
+            </div>
+          )}
+
           {/* Top row: icon + badge */}
           <div className="flex items-start justify-between mb-5">
             <div className="w-10 h-10 bg-white/5 border border-white/10 rounded-lg flex items-center justify-center">

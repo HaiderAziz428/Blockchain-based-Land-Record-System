@@ -1,25 +1,26 @@
-import { Landmark, Mail, Phone, MapPin, ExternalLink } from "lucide-react";
+import Link from 'next/link';
+import { Landmark, ExternalLink, Github } from 'lucide-react';
+import { CONTRACT_ADDRESS } from '@/src/utils/contract';
+
+const PRODUCT_LINKS = [
+  { label: 'Home', href: '/' },
+  { label: 'Marketplace', href: '/marketplace' },
+  { label: 'Verify a Property', href: '/verify' },
+];
+
+const PORTAL_LINKS = [
+  { label: 'Landowner Dashboard', href: '/dashboard/user' },
+  { label: 'Government Admin', href: '/dashboard/admin' },
+];
 
 export default function Footer() {
-  const links = {
-    "Quick Links": [
-      { label: "About Us", href: "#" },
-      { label: "Services", href: "#" },
-      { label: "Properties", href: "#" },
-      { label: "Contact", href: "#" },
-    ],
-    "Resources": [
-      { label: "How It Works", href: "#" },
-      { label: "FAQs", href: "#" },
-      { label: "Support", href: "#" },
-      { label: "Documentation", href: "#" },
-    ],
-  };
+  const year = new Date().getFullYear();
+  const etherscan = `https://sepolia.etherscan.io/address/${CONTRACT_ADDRESS}`;
 
   return (
     <footer className="mt-16 border-t border-white/[0.05] bg-[#0a0b1e]">
-      <div className="max-w-6xl mx-auto px-6 md:px-12 py-16">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-12 mb-12">
+      <div className="max-w-6xl mx-auto px-6 md:px-12 py-14">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-10 mb-10">
           {/* Brand */}
           <div className="md:col-span-1">
             <div className="flex items-center gap-2.5 mb-4">
@@ -29,65 +30,109 @@ export default function Footer() {
               <span className="font-bold tracking-tight text-white">LandLedger</span>
             </div>
             <p className="text-gray-500 text-sm leading-relaxed mb-5">
-              Pakistan&apos;s first blockchain-based land registry. Secure, transparent, and government-backed property records.
+              A fully decentralized land registry built on Ethereum and IPFS. Tamper-proof
+              ownership, public verification, no middlemen.
             </p>
+            <div className="text-[11px] text-gray-600 leading-relaxed">
+              Network: <span className="text-gray-500">Sepolia Testnet</span>
+              <br />
+              Token: <span className="text-gray-500">PakLandRegistry (PLR)</span>
+            </div>
           </div>
 
-          {/* Link Columns */}
-          {Object.entries(links).map(([title, items]) => (
-            <div key={title}>
-              <h5 className="font-medium mb-5 text-sm text-gray-300">{title}</h5>
-              <ul className="space-y-3">
-                {items.map(({ label, href }) => (
-                  <li key={label}>
-                    <a
-                      href={href}
-                      className="text-sm text-gray-500 hover:text-white transition-opacity duration-200"
-                    >
-                      {label}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-
-          {/* Contact */}
+          {/* Product */}
           <div>
-            <h5 className="font-medium mb-5 text-sm text-gray-300">Contact</h5>
-            <ul className="space-y-3.5 text-sm text-gray-500">
-              <li className="flex items-start gap-2.5">
-                <MapPin size={15} className="text-gray-400 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
-                <span>Land Registry Office,<br />Islamabad, Pakistan</span>
-              </li>
-              <li className="flex items-center gap-2.5">
-                <Mail size={15} className="text-gray-400 flex-shrink-0" strokeWidth={1.5} />
-                <a href="mailto:info@landledger.gov.pk" className="hover:text-white transition-opacity duration-200">
-                  info@landledger.gov.pk
+            <h5 className="font-medium mb-4 text-sm text-gray-300">Product</h5>
+            <ul className="space-y-2.5">
+              {PRODUCT_LINKS.map(({ label, href }) => (
+                <li key={label}>
+                  <Link
+                    href={href}
+                    className="text-sm text-gray-500 hover:text-white transition-colors"
+                  >
+                    {label}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {/* Portals */}
+          <div>
+            <h5 className="font-medium mb-4 text-sm text-gray-300">Portals</h5>
+            <ul className="space-y-2.5">
+              {PORTAL_LINKS.map(({ label, href }) => (
+                <li key={label}>
+                  <Link
+                    href={href}
+                    className="text-sm text-gray-500 hover:text-white transition-colors"
+                  >
+                    {label}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {/* On-chain */}
+          <div>
+            <h5 className="font-medium mb-4 text-sm text-gray-300">On-Chain</h5>
+            <ul className="space-y-2.5 text-sm text-gray-500">
+              <li>
+                <a
+                  href={etherscan}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1.5 hover:text-white transition-colors"
+                >
+                  <ExternalLink size={13} strokeWidth={1.5} />
+                  View Contract on Etherscan
                 </a>
-              </li>
-              <li className="flex items-center gap-2.5">
-                <Phone size={15} className="text-gray-400 flex-shrink-0" strokeWidth={1.5} />
-                <span>+92 (51) 123-4567</span>
               </li>
               <li>
                 <a
-                  href="#"
-                  className="flex items-center gap-1.5 text-xs text-indigo-400 hover:text-indigo-300 transition-opacity mt-1"
+                  href="https://sepoliafaucet.com/"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1.5 hover:text-white transition-colors"
                 >
-                  <ExternalLink size={12} strokeWidth={1.5} /> View on Etherscan
+                  <ExternalLink size={13} strokeWidth={1.5} />
+                  Get Sepolia Test ETH
                 </a>
+              </li>
+              <li>
+                <a
+                  href="https://github.com/HaiderAziz428/Blockchain-based-Land-Record-System"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1.5 hover:text-white transition-colors"
+                >
+                  <Github size={13} strokeWidth={1.5} />
+                  Source on GitHub
+                </a>
+              </li>
+              <li className="pt-1">
+                <p className="text-[11px] text-gray-600 break-all font-mono leading-relaxed">
+                  {CONTRACT_ADDRESS}
+                </p>
               </li>
             </ul>
           </div>
         </div>
 
         {/* Bottom bar */}
-        <div className="pt-8 border-t border-white/[0.05] flex flex-col md:flex-row items-center justify-between gap-3 text-xs text-gray-600">
-          <span>© 2025 LandLedger. A Government of Pakistan Initiative. All rights reserved.</span>
+        <div className="pt-6 border-t border-white/[0.05] flex flex-col md:flex-row items-center justify-between gap-3 text-xs text-gray-600">
+          <span>© {year} LandLedger. Final Year Project — research-grade prototype on Sepolia testnet.</span>
           <div className="flex items-center gap-4">
-            <a href="#" className="hover:text-gray-400 transition-opacity duration-200">Privacy Policy</a>
-            <a href="#" className="hover:text-gray-400 transition-opacity duration-200">Terms of Use</a>
+            <Link href="/verify" className="hover:text-gray-400 transition-colors">Public Verification</Link>
+            <a
+              href={etherscan}
+              target="_blank"
+              rel="noreferrer"
+              className="hover:text-gray-400 transition-colors"
+            >
+              Contract
+            </a>
           </div>
         </div>
       </div>

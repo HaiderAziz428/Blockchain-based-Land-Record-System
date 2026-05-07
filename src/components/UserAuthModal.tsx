@@ -16,6 +16,7 @@ export default function UserAuthModal({ isOpen, onClose }: UserAuthModalProps) {
   const [name, setName] = useState('');
   const [cnic, setCnic] = useState('');
   const [status, setStatus] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
   const router = useRouter();
 
   const { writeContract, data: hash, isPending } = useWriteContract();
@@ -24,6 +25,7 @@ export default function UserAuthModal({ isOpen, onClose }: UserAuthModalProps) {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name || !cnic) return;
+    setErrorMsg('');
     setStatus('Validating Identity in Govt DB...');
 
     try {
@@ -36,7 +38,8 @@ export default function UserAuthModal({ isOpen, onClose }: UserAuthModalProps) {
 
       if (error || !citizen) {
         setStatus('');
-        return alert("Verification Failed: CNIC not found in Govt Census.");
+        setErrorMsg('CNIC not found in the government census database. Double-check the number and try again.');
+        return;
       }
 
       setStatus('Identity Verified. Please sign in MetaMask...');
@@ -51,7 +54,7 @@ export default function UserAuthModal({ isOpen, onClose }: UserAuthModalProps) {
     } catch (err) {
       console.error(err);
       setStatus('');
-      alert("Error checking database.");
+      setErrorMsg('Could not reach the government database. Check your internet connection.');
     }
   };
 
@@ -104,6 +107,12 @@ export default function UserAuthModal({ isOpen, onClose }: UserAuthModalProps) {
             <div className="flex items-center justify-center gap-2 text-sm text-brand-secondary bg-brand-secondary/10 py-2 rounded-lg">
               <Loader2 className="animate-spin" size={16} />
               {isSuccess ? 'Registered! Redirecting…' : isPending ? 'Check Wallet...' : isConfirming ? 'Registering on Chain...' : status}
+            </div>
+          )}
+
+          {errorMsg && (
+            <div className="text-red-400 text-xs p-3 bg-red-500/10 rounded-lg border border-red-500/20">
+              {errorMsg}
             </div>
           )}
 

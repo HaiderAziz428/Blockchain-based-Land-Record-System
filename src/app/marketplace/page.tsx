@@ -47,6 +47,7 @@ export default function MarketplacePage() {
   const [isLoading, setIsLoading] = useState(true);
   const [buyingId, setBuyingId] = useState<string | null>(null);
   const [txToast, setTxToast] = useState<{ hash: string; message: string } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const { data: userProfile } = useReadContract({
     address: CONTRACT_ADDRESS,
@@ -135,11 +136,11 @@ export default function MarketplacePage() {
 
   const handleBuy = async (landId: string, priceWei: bigint, sellerWallet: string) => {
     if (!isConnected || !address || !publicClient) {
-      alert('Please connect your wallet.');
+      setNotice('Connect your wallet to buy land.');
       return;
     }
     if (sellerWallet.toLowerCase() === address.toLowerCase()) {
-      alert('You are the seller — cannot buy your own land.');
+      setNotice('You are the seller — cannot buy your own listing.');
       return;
     }
 
@@ -150,7 +151,7 @@ export default function MarketplacePage() {
       args: [address],
     })) as [string, string, boolean];
     if (!profile[2]) {
-      alert('Your wallet is not registered. Register via the User Portal first.');
+      setNotice('Your wallet is not registered. Open the User Portal to complete one-time CNIC verification first.');
       return;
     }
 
@@ -163,11 +164,12 @@ export default function MarketplacePage() {
     })) as OnChainListing;
     const [onChainPrice, , isActive, deadline] = listing;
 
-    if (!isActive) { alert('Listing no longer active. Refresh and try again.'); return; }
+    if (!isActive) { setNotice('This listing is no longer active. Refresh the page.'); return; }
     if (deadline > BigInt(0) && BigInt(Math.floor(Date.now() / 1000)) > deadline) {
-      alert('Listing has expired (7-day window). Seller must relist.');
+      setNotice('Listing has expired (7-day window) — the seller must relist.');
       return;
     }
+    setNotice(null);
 
     const priceEth = Number(onChainPrice) / 1e18;
     if (!confirm(`Buy Land ${landId} for ${priceEth} ETH?`)) return;
@@ -219,6 +221,19 @@ export default function MarketplacePage() {
             Fully on-chain listings — metadata and photos live on IPFS, price and ownership verified on Sepolia.
           </p>
         </div>
+
+        {notice && (
+          <div className="mb-6 rounded-xl border border-yellow-500/20 bg-yellow-500/10 p-4 text-sm text-yellow-100 flex items-start justify-between gap-3">
+            <span>{notice}</span>
+            <button
+              onClick={() => setNotice(null)}
+              className="text-yellow-300/60 hover:text-yellow-200 text-lg leading-none"
+              aria-label="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        )}
 
         {writeError && (
           <div className="mb-6 rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">

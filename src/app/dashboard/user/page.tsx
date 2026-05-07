@@ -48,6 +48,7 @@ export default function UserDashboard() {
   const [selectedLand, setSelectedLand] = useState<Plot | null>(null);
 
   const [txToast, setTxToast] = useState<{ hash: string; message: string } | null>(null);
+  const [notice, setNotice] = useState<{ tone: 'error' | 'info'; message: string } | null>(null);
 
   // Inheritance heir state
   const [heirLandId, setHeirLandId] = useState('');
@@ -118,7 +119,11 @@ export default function UserDashboard() {
 
   // ── Mint ──────────────────────────────────────────────────────────────────
   const handleMintRequest = async (landId: string) => {
-    if (!address) return alert('Wallet not connected!');
+    if (!address) {
+      setNotice({ tone: 'error', message: 'Wallet not connected.' });
+      return;
+    }
+    setNotice(null);
     setMintingPlotId(landId);
     try {
       const response = await fetch('/api/verify', {
@@ -131,7 +136,7 @@ export default function UserDashboard() {
       setTxToast({ hash: result.txHash, message: `Plot ${landId} minted successfully!` });
       void loadData();
     } catch (e: unknown) {
-      alert(`Error: ${e instanceof Error ? e.message : 'Unknown error'}`);
+      setNotice({ tone: 'error', message: e instanceof Error ? e.message : 'Unknown error' });
     }
     setMintingPlotId(null);
   };
@@ -254,6 +259,17 @@ export default function UserDashboard() {
           </p>
         </header>
 
+        {notice && (
+          <div className={`mb-6 px-4 py-3 rounded-lg border text-sm flex items-start justify-between gap-3 ${
+            notice.tone === 'error'
+              ? 'bg-red-500/10 border-red-500/20 text-red-200'
+              : 'bg-indigo-500/10 border-indigo-500/20 text-indigo-200'
+          }`}>
+            <span>{notice.message}</span>
+            <button onClick={() => setNotice(null)} className="opacity-60 hover:opacity-100 text-lg leading-none" aria-label="Dismiss">×</button>
+          </div>
+        )}
+
         <h2 className="text-xl font-semibold mb-6 tracking-tight">Your Property Portfolio</h2>
         {plots.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
@@ -358,7 +374,12 @@ export default function UserDashboard() {
           </div>
         ) : (
           <div className="p-10 rounded-xl border border-white/[0.06] bg-white/[0.02] text-center">
-            <p className="text-gray-500 text-sm">No properties found for your CNIC in the government database.</p>
+            <p className="text-sm text-gray-300 font-medium mb-1">No properties yet</p>
+            <p className="text-xs text-gray-500 max-w-md mx-auto leading-relaxed">
+              No land records are linked to your CNIC in the government database. If you believe this
+              is incorrect, contact the local revenue office or ensure your CNIC matches the one on
+              file with the government.
+            </p>
           </div>
         )}
 

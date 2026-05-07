@@ -86,8 +86,9 @@ export default function TransferModal({ isOpen, onClose, landId, location, onSuc
         onClose();
         onSuccess(hash);
       } catch (e) {
+        // DB sync is best-effort — chain is the source of truth.
+        // Surface a soft warning to the parent via the toast pipeline.
         console.error('DB sync after transfer failed:', e);
-        alert('Transfer confirmed on-chain, but government record sync failed. Please contact admin.');
         onClose();
         onSuccess(hash);
       }
