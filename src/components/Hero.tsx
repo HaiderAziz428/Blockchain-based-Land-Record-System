@@ -32,16 +32,14 @@ export default function Hero() {
 
       {/* Heading */}
       <h1 className="text-5xl md:text-6xl font-bold leading-[1.1] tracking-tight mb-5 max-w-3xl text-white">
-        Tamper-proof Land Records,
+        Blockchain Based
         <br />
-        <span className="text-indigo-400">Verified On-Chain.</span>
+        <span className="text-indigo-400">Land Records</span>
       </h1>
 
       {/* Subheading */}
       <p className="text-gray-400 text-base mb-10 max-w-xl leading-relaxed">
-        A fully decentralized land registry built on the Ethereum Sepolia testnet. Each parcel is an
-        ERC-721 NFT; every deed is pinned to IPFS. Anyone can verify ownership in seconds — no
-        clerk, no fee, no waiting.
+        Pakistan's first blockchain-based Land Registry. Secure, transparent, and immutable property records for everyone.
       </p>
 
       {/* Feature pills */}

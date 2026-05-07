@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useReadContract, usePublicClient } from 'wagmi';
 import { parseAbiItem } from 'viem';
 import { CONTRACT_ABI, CONTRACT_ADDRESS } from '@/src/utils/contract';
@@ -8,6 +8,13 @@ import Navbar from '@/src/components/Navbar';
 import { Search, Loader2, CheckCircle2, AlertCircle, ExternalLink, FileText, ShieldCheck, ShieldAlert, Clock } from 'lucide-react';
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+
+// Public Sepolia RPCs cap eth_getLogs at 10k blocks. Stay safely under that.
+const MAX_LOG_RANGE = BigInt(9500);
+// Sepolia averages ~12s per block — used to translate verifiedAt → block range.
+const SEPOLIA_BLOCK_TIME_SECS = BigInt(12);
+// Padding to absorb block-time drift around the mint timestamp.
+const BLOCK_PADDING = BigInt(1000);
 
 interface HistoryEvent {
   type: 'MINT' | 'TRANSFER';
@@ -28,6 +35,7 @@ export default function VerifyPage() {
   const [queryId, setQueryId] = useState('');
   const [history, setHistory] = useState<HistoryEvent[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   const publicClient = usePublicClient();
 
@@ -39,67 +47,118 @@ export default function VerifyPage() {
     query: { enabled: !!queryId, retry: false },
   });
 
-  const fetchHistory = async (landId: string) => {
+  /**
+   * Fetch on-chain history for a land starting at its mint block.
+   *
+   * Public Sepolia RPCs (publicnode, thirdweb default) limit eth_getLogs to a
+   * 10,000-block range, so we cannot use fromBlock: 'earliest'. Instead, we use
+   * the LandRecord.verifiedAt timestamp (which is the mint block timestamp) to
+   * estimate the mint block, then scan forward in chunked windows until we
+   * reach the current head.
+   */
+  const fetchHistory = async (landId: string, verifiedAtSecs: bigint) => {
     if (!publicClient) return;
     setLoadingHistory(true);
     setHistory([]);
+    setHistoryError(null);
 
     try {
-      const transferLogs = await publicClient.getLogs({
-        address: CONTRACT_ADDRESS,
-        event: parseAbiItem('event LandTransferred(string landId, address indexed from, address indexed to, uint256 price)'),
-        fromBlock: 'earliest',
-      });
+      const latest = await publicClient.getBlockNumber();
 
-      const mintLogs = await publicClient.getLogs({
-        address: CONTRACT_ADDRESS,
-        event: parseAbiItem('event LandMinted(address indexed owner, string landId, uint8 lType, uint256 tokenId)'),
-        fromBlock: 'earliest',
-      });
+      // Estimate the mint block from verifiedAt timestamp.
+      const nowSecs = BigInt(Math.floor(Date.now() / 1000));
+      const ageSecs = nowSecs > verifiedAtSecs ? nowSecs - verifiedAtSecs : BigInt(0);
+      const blocksAgo = ageSecs / SEPOLIA_BLOCK_TIME_SECS;
+      const estimatedMintBlock = latest > blocksAgo + BLOCK_PADDING
+        ? latest - blocksAgo - BLOCK_PADDING
+        : BigInt(0);
+
+      const transferEvent = parseAbiItem(
+        'event LandTransferred(string landId, address indexed from, address indexed to, uint256 price)'
+      );
+      const mintEvent = parseAbiItem(
+        'event LandMinted(address indexed owner, string landId, uint8 lType, uint256 tokenId)'
+      );
 
       const events: HistoryEvent[] = [];
 
-      for (const log of mintLogs) {
-        if ((log.args as Record<string, unknown>).landId === landId) {
-          events.push({
-            type: 'MINT',
-            from: 'GOVT',
-            // @ts-expect-error -- wagmi type inference
-            to: log.args.owner,
-            txHash: log.transactionHash,
-            blockNumber: log.blockNumber,
-          });
-        }
-      }
+      // Walk from the estimated mint block forward to head, in chunks safely
+      // under the 10k-block public-RPC limit.
+      let from = estimatedMintBlock;
+      while (from <= latest) {
+        const to = from + MAX_LOG_RANGE > latest ? latest : from + MAX_LOG_RANGE;
 
-      for (const log of transferLogs) {
-        if ((log.args as Record<string, unknown>).landId === landId) {
-          events.push({
-            type: 'TRANSFER',
-            // @ts-expect-error -- wagmi type inference
-            from: log.args.from,
-            // @ts-expect-error -- wagmi type inference
-            to: log.args.to,
-            txHash: log.transactionHash,
-            blockNumber: log.blockNumber,
-          });
+        const [transferLogs, mintLogs] = await Promise.all([
+          publicClient.getLogs({
+            address: CONTRACT_ADDRESS,
+            event: transferEvent,
+            fromBlock: from,
+            toBlock: to,
+          }),
+          publicClient.getLogs({
+            address: CONTRACT_ADDRESS,
+            event: mintEvent,
+            fromBlock: from,
+            toBlock: to,
+          }),
+        ]);
+
+        for (const log of mintLogs) {
+          if ((log.args as Record<string, unknown>).landId === landId) {
+            events.push({
+              type: 'MINT',
+              from: 'GOVT',
+              // @ts-expect-error -- wagmi type inference
+              to: log.args.owner,
+              txHash: log.transactionHash,
+              blockNumber: log.blockNumber,
+            });
+          }
         }
+        for (const log of transferLogs) {
+          if ((log.args as Record<string, unknown>).landId === landId) {
+            events.push({
+              type: 'TRANSFER',
+              // @ts-expect-error -- wagmi type inference
+              from: log.args.from,
+              // @ts-expect-error -- wagmi type inference
+              to: log.args.to,
+              txHash: log.transactionHash,
+              blockNumber: log.blockNumber,
+            });
+          }
+        }
+
+        if (to >= latest) break;
+        from = to + BigInt(1);
       }
 
       events.sort((a, b) => Number(b.blockNumber - a.blockNumber));
       setHistory(events);
     } catch (e) {
-      console.error('Error fetching history:', e);
+      console.error('History fetch failed:', e);
+      setHistoryError(
+        'Could not load on-chain history. The RPC may be rate-limited or temporarily unavailable — try again in a moment.'
+      );
     } finally {
       setLoadingHistory(false);
     }
   };
 
+  // Trigger the history fetch once the LandRecord is loaded — we need its
+  // verifiedAt timestamp to bound the log scan to a manageable block range.
+  useEffect(() => {
+    if (!queryId || !landRecord) return;
+    const record = landRecord as Record<string, unknown>;
+    if (record.currentOwner === ZERO_ADDRESS) return; // no record → no history
+    void fetchHistory(queryId, record.verifiedAt as bigint);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryId, landRecord]);
+
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchId.trim()) return;
     setQueryId(searchId.trim());
-    fetchHistory(searchId.trim());
   };
 
   const isValidRecord = landRecord && (landRecord as Record<string, unknown>).currentOwner !== ZERO_ADDRESS;
@@ -244,6 +303,22 @@ export default function VerifyPage() {
               {loadingHistory ? (
                 <div className="flex items-center gap-2 text-sm text-gray-400">
                   <Loader2 size={14} className="animate-spin" /> Tracing blockchain events…
+                </div>
+              ) : historyError ? (
+                <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4 flex items-start gap-2.5">
+                  <AlertCircle size={15} className="text-red-400 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-sm text-red-300">{historyError}</p>
+                    <button
+                      onClick={() => {
+                        const r = landRecord as Record<string, unknown> | undefined;
+                        if (r?.verifiedAt) void fetchHistory(queryId, r.verifiedAt as bigint);
+                      }}
+                      className="mt-2 text-xs text-red-300 hover:text-red-200 underline underline-offset-2"
+                    >
+                      Retry
+                    </button>
+                  </div>
                 </div>
               ) : history.length === 0 ? (
                 <p className="text-sm text-gray-500">

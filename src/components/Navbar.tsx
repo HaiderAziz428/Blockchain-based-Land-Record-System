@@ -10,7 +10,7 @@ const NAV_LINKS = [
   { label: 'Home', href: '/' },
   { label: 'Marketplace', href: '/marketplace' },
   { label: 'Verify', href: '/verify' },
-  { label: 'User Dashboard', href: '/dashboard/user' },
+  { label: 'User', href: '/dashboard/user' },
   { label: 'Admin', href: '/dashboard/admin' },
 ];
 
