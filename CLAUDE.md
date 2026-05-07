@@ -761,4 +761,59 @@ The frontend follows a small, consistent design language. Use the existing utili
 
 ---
 
+## 16. Recent Iterations (Change Log)
+
+This section captures meaningful changes made on top of the v3 architecture documented above. For full diff context use `git log`; this is a high-level summary so future agents can orient quickly.
+
+### 16.1 UI Polish
+
+**Branch:** `feat/ui-polish` → merged to `main`
+
+A focused pass to make the frontend feel like one coherent product instead of a collection of pages.
+
+- **New design-system utilities in `globals.css`** — `.btn-primary` / `.btn-secondary` / `.btn-ghost`, `.field`, `.pill`, `.surface` / `.surface-hover`. Use these by default; reach for ad-hoc Tailwind only when these don't fit. (See §14.6 for the full table.)
+- **Fade-up animation scoped to `.home-stagger`** — was previously global on `main > *`, which fought live data hydration on dashboards. Now only `app/page.tsx` opts in.
+- **Navbar rewritten** — Next.js `<Link>` (no full-page reloads), active-link state via `usePathname()`, mobile hamburger drawer (the previous version had no mobile menu at all), correct hrefs (`/dashboard/user`, `/dashboard/admin`).
+- **Footer with real links** — Etherscan link to the deployed contract, GitHub repo, Sepolia faucet. Auto-current copyright via `new Date().getFullYear()`.
+- **Native `alert()` calls eliminated** — replaced with dismissable inline notice banners on PortalSelection (wallet-connect prompt), Marketplace (5 cases), User Dashboard (mint errors), and UserAuthModal (CNIC verification).
+- **`/verify` page consistency** — switched from a parallel `Header` component to the canonical `Navbar`; normalized to `bg-brand-dark`; cleaner timeline; status pill icons.
+- **Deleted unused components**: `src/components/Header.tsx` (duplicate of Navbar) and `src/components/RegistrationModal.tsx` (unused — `UserAuthModal` is the canonical registration flow).
+
+### 16.2 Verify-Page History RPC Fix
+
+**Branch:** `fix/verify-history-rpc-range` → merged to `main`
+
+The `/verify` page was silently rendering an empty Chain-of-Title for every land. Root cause: `getLogs({ fromBlock: 'earliest' })` scans ~5M blocks since Sepolia genesis, but every public RPC (PublicNode, RPC2.Sepolia, the Thirdweb fallback) caps `eth_getLogs` at a 10,000-block range. The request rejected; the empty `catch` block swallowed the error.
+
+Fix:
+- Bound the scan using `LandRecord.verifiedAt` (the mint timestamp). A land's history can only start at its mint, so we estimate the mint block from `verifiedAt` ÷ ~12s Sepolia block time, then walk forward to head in 9,500-block chunks (safely under the 10k cap).
+- Replaced the synchronous `fetchHistory(landId)` call in `handleSearch` with an effect that waits for `landRecord` to load (so we have `verifiedAt`).
+- Added an inline error banner with a Retry button when the RPC fails — previously it failed silently.
+- Used `BigInt()` constructors instead of `n` literals (the project targets ES2017; bigint *literals* require ES2020 but bigint *values* are runtime-supported).
+
+If a future redeploy of the contract changes its deployment block, this code keeps working — the lower bound is per-record (each land's own mint block), not a hardcoded contract-deploy block.
+
+### 16.3 Scope Reframe to New Housing Societies
+
+**Branch:** `docs/reframe-new-societies` → merged to `main`
+
+A purely-textual reframe of the project's stated scope. **Zero code changed.**
+
+Old positioning: "Fix Pakistan's patwari/revenue-office paper-record corruption" — rhetorically dramatic but operationally indefensible (no FYP can credibly claim it will replace a 100-year-old, court-anchored revenue system).
+
+New positioning: **LandLedger targets new private and semi-private housing developments in Pakistan** — DHA, Bahria Town, CDA/LDA new sectors, and private real-estate schemes — that issue plot allotments paperless from day one. This:
+- Has identifiable adopters (any single DHA phase or new-society launch can adopt it month one).
+- Solves a documented pain point (DHA-file scams, double allotments, forged transfer letters, ghost plots).
+- Avoids the legal/political mess of legacy migration.
+- Maps cleanly to every feature already built — the contract doesn't care whether the asset is "Mauza Rakh, district X" or "DHA Phase 9, Plot 42."
+
+What changed:
+- **CLAUDE.md** — §1 Executive Summary, §2 fully rewritten (now: market we target → pain points → why blockchain → what this isn't), §4 reframed the Supabase mock as the developer's allotment registry, §13 added "pilot deployment with a single developer phase" as the realistic adoption path, glossary updated (added allotment letter / DHA file scam / society allotment registry; demoted patwari/fard/intiqal/virsa to background context only).
+- **README.md** — new tagline; new "🎯 Who This Is For" section; problem statement rewritten around DHA-file scams, double allotment, forged transfer letters, ghost plots; target users re-roled (allottees, secondary-market buyers, developer authority, developer's transfer office); comparison table now "Traditional Society Transfer Office" with society-specific numbers (PKR 25k–200k+ transfer fees, 2–8-week timelines, "DHA-file scam exposure" row).
+- **Thesis DOCX** (`LandLedger_FYP_Thesis_v2.docx` in Downloads) — Abstract, Ch 1 (Background, Problem Statement, Importance, Scope, Contributions), Ch 5.4 comparison table, Ch 6 Conclusion + Future Work all reframed. Patwari mentions reduced to 9 (background only); DHA/Bahria/allotment mentions now 24 (the new core framing).
+
+The `govt_land_records` table name in Supabase is preserved for backward-compat; semantically it now represents the developer's allotment registry. The `verificationBackend` role on-chain is now described as "the developer's transfer office" rather than "the government oracle."
+
+---
+
 **End of CLAUDE.md** — if any concept above is unclear in the codebase, the answer is almost certainly in §6 (contract), §7 (frontend patterns), or §8 (workflows). Start there.
