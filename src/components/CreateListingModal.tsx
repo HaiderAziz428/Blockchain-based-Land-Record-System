@@ -22,11 +22,6 @@ interface CreateListingModalProps {
 
 type PrepStep = 'idle' | 'uploading_photos' | 'uploading_metadata' | 'ready';
 
-const PREP_LABELS: Record<string, string> = {
-  uploading_photos: 'Uploading photos to IPFS…',
-  uploading_metadata: 'Pinning listing metadata to IPFS…',
-};
-
 export default function CreateListingModal({ isOpen, onClose, land, sellerAddress, onSuccess }: CreateListingModalProps) {
   const [prepStep, setPrepStep] = useState<PrepStep>('idle');
   const [metadataCid, setMetadataCid] = useState('');
@@ -129,90 +124,79 @@ export default function CreateListingModal({ isOpen, onClose, land, sellerAddres
           <X size={20} />
         </button>
 
-        <h2 className="text-2xl font-bold text-white mb-1 flex items-center gap-2">
-          <UploadCloud className="text-brand-primary" /> List Property On-Chain
-        </h2>
-        <p className="text-xs text-gray-500 mb-3 font-mono">
-          {land.land_id} · {land.location}{land.area_sq_yards ? ` · ${land.area_sq_yards} Sq Yds` : ''}
+        <h2 className="text-lg font-semibold text-white tracking-tight">List for sale</h2>
+        <p className="text-xs text-gray-500 mt-0.5 font-mono">
+          {land.land_id} · {land.location}{land.area_sq_yards ? ` · ${land.area_sq_yards} sq yd` : ''}
         </p>
-        <div className="mb-5 text-[11px] text-white/40 bg-white/[0.02] border border-white/[0.06] rounded-lg px-3 py-2">
-          Fully decentralized — photos and metadata are pinned to IPFS, the CID and price are stored on-chain. No database involved.
-        </div>
+        <p className="text-[11px] text-gray-500 mt-3 mb-5 leading-relaxed">
+          Photos &amp; metadata get pinned to IPFS, then price + CID are written on-chain. Listing is locked for 7 days.
+        </p>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="text-xs text-white/60">Property Type</label>
-              <select value={landType} onChange={(e) => setLandType(e.target.value)} disabled={isBusy}
-                className="w-full bg-black/30 border border-white/10 p-3 rounded-xl text-white outline-none mt-1">
-                <option>Real Estate (House/Plot)</option>
-                <option>Agricultural Land</option>
-                <option>Commercial Property</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-xs text-white/60">Sale Price (ETH) — locked on-chain</label>
-              <input type="number" step="0.0001" value={price} onChange={(e) => setPrice(e.target.value)}
-                disabled={isBusy} placeholder="e.g. 0.5"
-                className="w-full bg-black/30 border border-white/10 p-3 rounded-xl text-white outline-none mt-1 font-mono"
-                required />
-            </div>
-            <div className="md:col-span-2">
-              <label className="text-xs text-white/60">WhatsApp (optional — stored in IPFS metadata)</label>
-              <input type="text" placeholder="+92 300 0000000" value={whatsapp}
-                onChange={(e) => setWhatsapp(e.target.value)} disabled={isBusy}
-                className="w-full bg-black/30 border border-white/10 p-3 rounded-xl text-white outline-none mt-1" />
-            </div>
-          </div>
+        <form onSubmit={handleSubmit} className="space-y-5">
 
-          <div>
-            <label className="text-xs text-white/60">Description</label>
+          {/* Section: Listing details */}
+          <fieldset className="space-y-3">
+            <legend className="text-[11px] uppercase tracking-wide text-gray-500 mb-2">Listing details</legend>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="text-[11px] text-gray-400">Property type</label>
+                <select value={landType} onChange={(e) => setLandType(e.target.value)} disabled={isBusy}
+                  className="w-full bg-black/30 border border-white/10 p-2.5 rounded-md text-sm text-white outline-none mt-1 focus:border-indigo-500">
+                  <option>Real Estate (House/Plot)</option>
+                  <option>Agricultural Land</option>
+                  <option>Commercial Property</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] text-gray-400">Sale price (ETH)</label>
+                <input type="number" step="0.0001" value={price} onChange={(e) => setPrice(e.target.value)}
+                  disabled={isBusy} placeholder="0.5"
+                  className="w-full bg-black/30 border border-white/10 p-2.5 rounded-md text-sm text-white outline-none mt-1 font-mono focus:border-indigo-500"
+                  required />
+              </div>
+            </div>
+          </fieldset>
+
+          {/* Section: Description */}
+          <fieldset>
+            <legend className="text-[11px] uppercase tracking-wide text-gray-500 mb-2">Description</legend>
             <textarea rows={2} value={desc} onChange={(e) => setDesc(e.target.value)} disabled={isBusy}
-              className="w-full bg-black/30 border border-white/10 p-3 rounded-xl text-white outline-none mt-1"
-              placeholder="e.g. Corner plot, near park, all utilities available…" required />
-          </div>
+              className="w-full bg-black/30 border border-white/10 p-2.5 rounded-md text-sm text-white outline-none focus:border-indigo-500"
+              placeholder="Corner plot, near park, all utilities available…" required />
+          </fieldset>
 
-          <div>
-            <label className="text-xs text-white/60">Photos — max 3, pinned to IPFS</label>
+          {/* Section: Buyer contact */}
+          <fieldset>
+            <legend className="text-[11px] uppercase tracking-wide text-gray-500 mb-2">Buyer contact <span className="text-gray-600 normal-case font-normal">— optional, stored on IPFS</span></legend>
+            <input type="text" placeholder="+92 300 0000000" value={whatsapp}
+              onChange={(e) => setWhatsapp(e.target.value)} disabled={isBusy}
+              className="w-full bg-black/30 border border-white/10 p-2.5 rounded-md text-sm text-white outline-none focus:border-indigo-500" />
+          </fieldset>
+
+          {/* Section: Photos */}
+          <fieldset>
+            <legend className="text-[11px] uppercase tracking-wide text-gray-500 mb-2">Photos <span className="text-gray-600 normal-case font-normal">— up to 3, pinned to IPFS</span></legend>
             <input type="file" multiple accept="image/*" onChange={(e) => setFiles(e.target.files)}
               disabled={isBusy}
-              className="w-full mt-1 text-sm text-white/60 file:bg-brand-primary file:border-0 file:rounded-xl file:px-4 file:py-2 file:text-white"
+              className="w-full text-xs text-gray-400 file:bg-indigo-600 file:border-0 file:rounded-md file:px-3 file:py-1.5 file:text-white file:text-xs file:font-medium file:mr-3 file:cursor-pointer"
               required />
-          </div>
+          </fieldset>
 
-          {/* IPFS + blockchain progress pipeline */}
+          {/* Plain status — replaces the styled pill list */}
           {(isBusy || metadataCid) && (
-            <div className="space-y-2">
-              {(['uploading_photos', 'uploading_metadata'] as const).map((s) => {
-                const prepSteps = ['uploading_photos', 'uploading_metadata'] as const;
-                const curIdx = prepSteps.indexOf(prepStep as typeof prepSteps[number]);
-                const thisIdx = prepSteps.indexOf(s);
-                const isDone = prepStep === 'ready' || isTxBusy || curIdx > thisIdx;
-                const isActive = prepStep === s;
-                return (
-                  <div key={s} className={`flex items-center gap-2.5 text-xs px-3 py-2 rounded-lg transition-all ${
-                    isDone ? 'text-green-400 bg-green-500/10' :
-                    isActive ? 'text-indigo-300 bg-indigo-500/10' :
-                    'text-gray-600 bg-white/[0.02]'
-                  }`}>
-                    {isDone ? <CheckCircle2 size={13} /> : isActive ? <Loader2 size={13} className="animate-spin" /> : <div className="w-[13px] h-[13px] rounded-full border border-current opacity-30" />}
-                    {PREP_LABELS[s]}
-                  </div>
-                );
-              })}
-              {[
-                { key: 'wallet', label: 'Waiting for wallet approval…', active: isPending, done: isConfirming || isSuccess },
-                { key: 'chain', label: 'Confirming on Sepolia…', active: isConfirming, done: !!isSuccess },
-              ].map(({ key, label, active, done }) => (
-                <div key={key} className={`flex items-center gap-2.5 text-xs px-3 py-2 rounded-lg transition-all ${
-                  done ? 'text-green-400 bg-green-500/10' :
-                  active ? 'text-indigo-300 bg-indigo-500/10' :
-                  'text-gray-600 bg-white/[0.02]'
-                }`}>
-                  {done ? <CheckCircle2 size={13} /> : active ? <Loader2 size={13} className="animate-spin" /> : <div className="w-[13px] h-[13px] rounded-full border border-current opacity-30" />}
-                  {label}
+            <div className="text-xs text-gray-400 font-mono space-y-1 px-3 py-2.5 bg-white/[0.02] border border-white/[0.06] rounded-md">
+              <div className="flex items-center gap-2">
+                {isIpfsBusy ? <Loader2 size={11} className="animate-spin" /> : <CheckCircle2 size={11} className="text-green-400" />}
+                <span>{prepStep === 'uploading_photos' ? 'Uploading photos…'
+                  : prepStep === 'uploading_metadata' ? 'Pinning metadata JSON…'
+                  : 'IPFS upload complete'}</span>
+              </div>
+              {(isPending || isConfirming || isSuccess) && (
+                <div className="flex items-center gap-2">
+                  {isSuccess ? <CheckCircle2 size={11} className="text-green-400" /> : <Loader2 size={11} className="animate-spin" />}
+                  <span>{isPending ? 'Awaiting wallet signature…' : isConfirming ? 'Confirming on Sepolia…' : 'Listed on-chain'}</span>
                 </div>
-              ))}
+              )}
             </div>
           )}
 

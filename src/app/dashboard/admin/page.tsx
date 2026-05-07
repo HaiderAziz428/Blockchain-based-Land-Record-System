@@ -125,41 +125,40 @@ export default function AdminDashboard() {
       <div className="min-h-screen bg-brand-dark text-white">
         <Navbar />
 
-        <main className="mx-auto w-full max-w-6xl px-6 py-10 md:px-10 space-y-14">
+        <main className="mx-auto w-full max-w-6xl px-6 py-8 md:px-10 space-y-10">
 
-          {/* ── Info Cards ───────────────────────────────────────────── */}
+          {/* ── Compact admin header — single thin strip, real info ──────── */}
           <div>
-            <h1 className="text-3xl md:text-4xl font-semibold tracking-tight mb-2">Admin Portal</h1>
-            <p className="text-sm text-white/60 mb-8">Access is restricted to the smart contract owner.</p>
-
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-              <div className="p-6 rounded-xl border border-white/[0.06] bg-white/[0.02]">
-                <div className="text-xs text-gray-500 font-medium tracking-wide uppercase">Contract</div>
-                <div className="mt-2 text-sm text-gray-200">Land Registry (PLR)</div>
-                <div className="mt-3 break-all font-mono text-[11px] text-gray-400">{CONTRACT_ADDRESS}</div>
+            <div className="flex flex-wrap items-baseline justify-between gap-3 mb-3 pb-3 border-b border-white/[0.06]">
+              <div>
+                <h1 className="text-lg font-semibold tracking-tight">Admin console</h1>
+                <p className="text-[11px] text-gray-500 mt-0.5">Owner-only · backend-signing endpoint: <span className="font-mono text-gray-400">/api/verify</span></p>
               </div>
-              <div className="p-6 rounded-xl border border-white/[0.06] bg-white/[0.02]">
-                <div className="text-xs text-gray-500 font-medium tracking-wide uppercase">Owner (on-chain)</div>
-                <div className="mt-2 text-sm text-gray-200">{isOwnerLoading ? 'Loading…' : 'Verified'}</div>
-                <div className="mt-3 break-all font-mono text-[11px] text-gray-400">{String(contractOwner || '')}</div>
-              </div>
-              <div className="p-6 rounded-xl border border-white/[0.06] bg-white/[0.02]">
-                <div className="text-xs text-gray-500 font-medium tracking-wide uppercase">Connected Wallet</div>
-                <div className="mt-2 text-sm text-gray-200">Session</div>
-                <div className="mt-3 break-all font-mono text-[11px] text-gray-400">{address || 'Not connected'}</div>
-              </div>
+              <span className="text-[11px] text-gray-500">Sepolia</span>
             </div>
 
-            {/* Verify API info */}
-            <div className="mt-6 p-5 rounded-xl border border-white/10 bg-white/5">
-              <div className="text-xs font-mono text-gray-300">POST <span className="text-indigo-300">/api/verify</span></div>
-              <div className="mt-1 text-xs font-mono text-white/50">body: {'{ userAddress, landId }'} — mints verified land via backend key</div>
-            </div>
+            <dl className="grid grid-cols-1 sm:grid-cols-3 gap-x-6 gap-y-2 text-[11px]">
+              <div className="flex items-baseline gap-2">
+                <dt className="text-gray-500 uppercase tracking-wide w-16 shrink-0">Contract</dt>
+                <dd className="font-mono text-gray-300 truncate">{CONTRACT_ADDRESS}</dd>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <dt className="text-gray-500 uppercase tracking-wide w-16 shrink-0">Owner</dt>
+                <dd className="font-mono text-gray-300 truncate">{isOwnerLoading ? '…' : String(contractOwner || '')}</dd>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <dt className="text-gray-500 uppercase tracking-wide w-16 shrink-0">Session</dt>
+                <dd className="font-mono text-gray-300 truncate">{address || '—'}</dd>
+              </div>
+            </dl>
           </div>
 
           {/* ── All Land Records ─────────────────────────────────────── */}
           <div>
-            <h2 className="text-xl font-semibold mb-4 tracking-tight">All Land Records</h2>
+            <div className="flex items-baseline justify-between mb-3">
+              <h2 className="text-base font-semibold tracking-tight text-gray-300">All land records</h2>
+              <span className="text-[11px] text-gray-600 font-mono">getAllLandRecordsPaginated()</span>
+            </div>
             {isLandsLoading ? (
               <div className="flex items-center gap-2 text-gray-400 text-sm"><Loader2 size={16} className="animate-spin" /> Loading records…</div>
             ) : landRecords.length === 0 ? (
@@ -221,10 +220,12 @@ export default function AdminDashboard() {
 
           {/* ── Initiate Inheritance ─────────────────────────────────── */}
           <div>
-            <h2 className="text-xl font-semibold mb-1 tracking-tight">Initiate Succession Plan</h2>
-            <p className="text-gray-500 text-sm mb-6">
-              Burns the deceased owner&apos;s NFT and mints new land deeds for each heir. Heirs must all approve before execution.
-              Sent via the backend signing key (verificationBackend wallet).
+            <div className="flex items-baseline justify-between mb-1">
+              <h2 className="text-base font-semibold tracking-tight text-gray-300">Initiate succession plan</h2>
+              <span className="text-[11px] text-gray-600 font-mono">initiateInheritance()</span>
+            </div>
+            <p className="text-gray-500 text-xs mb-5">
+              Burns the deceased owner&apos;s NFT and proposes new deeds for each heir. Requires unanimous heir approval to execute. Signed via backend key.
             </p>
             <form onSubmit={handleInitiateInheritance} className="space-y-5 max-w-2xl">
               <div>
@@ -279,9 +280,12 @@ export default function AdminDashboard() {
 
           {/* ── Resolve Dispute ──────────────────────────────────────── */}
           <div>
-            <h2 className="text-xl font-semibold mb-1 tracking-tight">Resolve Dispute</h2>
-            <p className="text-gray-500 text-sm mb-6">
-              Force-execute a succession plan or reset the land to Active status. Uses the backend signing key.
+            <div className="flex items-baseline justify-between mb-1">
+              <h2 className="text-base font-semibold tracking-tight text-gray-300">Resolve dispute</h2>
+              <span className="text-[11px] text-gray-600 font-mono">resolveDispute()</span>
+            </div>
+            <p className="text-gray-500 text-xs mb-5">
+              Force-execute the succession plan, or reset the land to Active. Backend-signed.
             </p>
             <form onSubmit={handleResolveDispute} className="space-y-4 max-w-xl">
               <div>
@@ -321,10 +325,12 @@ export default function AdminDashboard() {
 
           {/* ── Set Govt Authority ───────────────────────────────────── */}
           <div>
-            <h2 className="text-xl font-semibold mb-1 tracking-tight">Govt Authority Access</h2>
-            <p className="text-gray-500 text-sm mb-6">
-              Whitelist a government department wallet (CDA, DHA, LDA) so it can hold land without a personal CNIC.
-              Signed directly by your admin wallet.
+            <div className="flex items-baseline justify-between mb-1">
+              <h2 className="text-base font-semibold tracking-tight text-gray-300">Authority whitelist</h2>
+              <span className="text-[11px] text-gray-600 font-mono">setGovtAuthority()</span>
+            </div>
+            <p className="text-gray-500 text-xs mb-5">
+              Grant or revoke an institutional wallet (DHA, Bahria, CDA, LDA, private developer) — these can hold plots without a personal CNIC. Signed directly by your owner wallet.
             </p>
             <form onSubmit={handleSetGovtAuthority} className="space-y-4 max-w-xl">
               <div>

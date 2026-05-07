@@ -250,13 +250,19 @@ export default function UserDashboard() {
       <Navbar />
       <main className="p-6 md:p-12 max-w-7xl mx-auto">
 
-        <header className="mb-12 animate-[fadeUp_0.4s_ease]">
-          <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">
-            Welcome, <span className="text-white">{userData?.full_name}</span>
-          </h1>
-          <p className="text-gray-500 mt-2 text-sm">
-            CNIC: <span className="font-mono text-gray-400">{userData?.cnic}</span>
-          </p>
+        {/* Thin status strip — real info, no marketing greeting */}
+        <header className="mb-8 flex flex-wrap items-end justify-between gap-3 pb-4 border-b border-white/[0.06]">
+          <div>
+            <h1 className="text-lg font-semibold tracking-tight">{userData?.full_name}</h1>
+            <p className="text-[11px] text-gray-500 font-mono mt-0.5">
+              CNIC {userData?.cnic} · {address?.slice(0, 6)}…{address?.slice(-4)}
+            </p>
+          </div>
+          <div className="flex items-center gap-5 text-[11px] text-gray-400">
+            <span><span className="text-white font-medium">{plots.filter(p => p.isMinted).length}</span>/{plots.length} on-chain</span>
+            <span><span className="text-white font-medium">{plots.filter(p => p.isListedOnChain).length}</span> listed</span>
+            <span><span className="text-white font-medium">{plots.filter(p => p.landStatus === 1 || p.landStatus === 2).length}</span> locked</span>
+          </div>
         </header>
 
         {notice && (
@@ -270,7 +276,7 @@ export default function UserDashboard() {
           </div>
         )}
 
-        <h2 className="text-xl font-semibold mb-6 tracking-tight">Your Property Portfolio</h2>
+        <h2 className="text-base font-semibold mb-4 tracking-tight text-gray-300">Property portfolio</h2>
         {plots.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
             {plots.map((plot) => (
@@ -384,10 +390,13 @@ export default function UserDashboard() {
         )}
 
         {/* ── Succession Plans ──────────────────────────────────────────── */}
-        <div className="mt-16">
-          <h2 className="text-xl font-semibold mb-2 tracking-tight">Succession Plans</h2>
-          <p className="text-gray-500 text-sm mb-6">
-            If you are listed as an heir, enter the <strong className="text-gray-400">original (old) land ID</strong> below to approve or dispute the succession plan.
+        <div className="mt-12">
+          <div className="flex items-baseline justify-between mb-3">
+            <h2 className="text-base font-semibold tracking-tight text-gray-300">Succession plans</h2>
+            <span className="text-[11px] text-gray-600">heir voting</span>
+          </div>
+          <p className="text-gray-500 text-xs mb-4">
+            If you&apos;re listed as an heir, enter the <span className="text-gray-400">original (deceased owner&apos;s) land ID</span> below to approve or dispute.
           </p>
 
           <div className="p-6 rounded-xl border border-white/[0.08] bg-white/[0.02] max-w-xl">

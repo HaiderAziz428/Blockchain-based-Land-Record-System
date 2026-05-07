@@ -5,25 +5,10 @@ import { useRouter } from 'next/navigation';
 import { useAccount, useReadContract } from 'wagmi';
 import { CONTRACT_ABI, CONTRACT_ADDRESS } from '@/src/utils/contract';
 import UserAuthModal from './UserAuthModal';
-import {
-  User,
-  Building2,
-  Search,
-  FileText,
-  CheckCircle,
-  ShieldCheck,
-  ArrowRight,
-  Database,
-  Loader2,
-  Lock,
-  Globe,
-  Cpu,
-  Fingerprint,
-} from "lucide-react";
+import { User, Building2, ArrowRight, Loader2, Lock, CheckCircle, AlertCircle } from 'lucide-react';
 
 export default function PortalSelection() {
   const [mounted, setMounted] = useState(false);
-  
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { setMounted(true); }, []);
 
@@ -42,20 +27,16 @@ export default function PortalSelection() {
     query: { enabled: !!address && isConnected },
   });
 
+  const profile = userData as readonly [string, string, boolean] | undefined;
+  const isRegistered = Boolean(profile?.[2]);
+
   const handleUserPortalClick = async () => {
-    if (!isConnected) {
-      setNotice('Connect your wallet first — use the Connect button in the top-right corner.');
-      return;
-    }
+    if (!isConnected) { setNotice('Connect your wallet first — top-right Connect button.'); return; }
     setNotice(null);
     setIsChecking(true);
-    const profile = userData as readonly [string, string, boolean] | undefined;
-    const isRegistered = Boolean(profile?.[2]);
     if (isRegistered) {
       localStorage.setItem('verified_user', JSON.stringify({
-        full_name: profile?.[0],
-        cnic: profile?.[1],
-        onChain: true,
+        full_name: profile?.[0], cnic: profile?.[1], onChain: true,
       }));
       router.push('/dashboard/user');
     } else {
@@ -65,156 +46,128 @@ export default function PortalSelection() {
   };
 
   const handleAdminPortalClick = () => {
-    if (!isConnected) {
-      setNotice('Connect your wallet first — use the Connect button in the top-right corner.');
-      return;
-    }
+    if (!isConnected) { setNotice('Connect your wallet first — top-right Connect button.'); return; }
     setNotice(null);
     router.push('/dashboard/admin');
   };
 
-  const trustBadges = [
-    { icon: Lock, label: "256-bit Encryption" },
-    { icon: Globe, label: "Decentralized Network" },
-    { icon: Cpu, label: "Smart Contract Powered" },
-    { icon: Fingerprint, label: "On-Chain Identity" },
-  ];
-
   return (
-    <section id="portals" className="px-6 md:px-12 py-16 scroll-mt-20">
+    <section id="portals" className="px-6 md:px-12 py-16 scroll-mt-20 max-w-5xl mx-auto">
 
-      {/* Section header */}
-      <div className="text-center mb-12">
-        <span className="inline-block text-gray-400 font-medium tracking-wide uppercase text-[10px] border border-white/[0.08] bg-white/[0.03] px-3 py-1 rounded-md mb-4">
-          Access Portal
-        </span>
-        <h2 className="text-3xl md:text-4xl font-bold mb-3 text-white tracking-tight">
-          Choose Your Portal
-        </h2>
-        <p className="text-gray-500 max-w-md mx-auto text-sm leading-relaxed">
-          Select the appropriate access portal. All interactions are secured on-chain and require a connected wallet.
-        </p>
+      {/* Section header — left aligned, no marketing pre-header */}
+      <div className="mb-8 flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="text-2xl md:text-3xl font-semibold tracking-tight text-white">Pick a portal</h2>
+          <p className="text-sm text-gray-500 mt-1">Wallet-gated. Admin access is restricted to the contract owner.</p>
+        </div>
+        {mounted && isConnected && (
+          <span className="text-[11px] text-gray-500 font-mono">
+            {address?.slice(0, 6)}…{address?.slice(-4)}
+          </span>
+        )}
       </div>
 
-      {/* Inline notice (replaces native alert) */}
       {notice && (
-        <div className="max-w-2xl mx-auto mb-6 px-4 py-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-200 text-sm flex items-start gap-2.5">
-          <Lock size={14} className="mt-0.5 flex-shrink-0" />
+        <div className="mb-5 px-4 py-2.5 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-200 text-sm flex items-start gap-2">
+          <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
           <span>{notice}</span>
         </div>
       )}
 
-      {/* Portal Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5 max-w-4xl mx-auto mb-10">
+      {/* Two portal rows — denser, info-first, asymmetric content */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
-        {/* USER PORTAL */}
-        <div
+        {/* USER */}
+        <button
+          type="button"
           onClick={handleUserPortalClick}
-          className="group relative cursor-pointer rounded-xl border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.12] transition-colors duration-200 p-7 overflow-hidden"
+          className="group relative text-left rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.16] transition-colors p-6 overflow-hidden disabled:cursor-wait"
+          disabled={!mounted || isBlockchainLoading || isChecking}
         >
-          {/* Loading Overlay */}
           {(!mounted || isBlockchainLoading || isChecking) && (
-            <div className="absolute inset-0 bg-[#0a0b1e]/85 backdrop-blur-sm flex flex-col items-center justify-center z-20 rounded-2xl">
-              <Loader2 className="animate-spin text-indigo-400 mb-2" size={28} />
-              <p className="text-xs text-gray-400 font-medium">Reading blockchain state…</p>
+            <div className="absolute inset-0 bg-[#0a0b1e]/85 backdrop-blur-sm flex items-center justify-center z-20 rounded-xl gap-2 text-xs text-gray-400">
+              <Loader2 className="animate-spin text-indigo-400" size={16} />
+              Reading on-chain registration…
             </div>
           )}
 
-          {/* Top row: icon + badge */}
-          <div className="flex items-start justify-between mb-5">
-            <div className="w-10 h-10 bg-white/5 border border-white/10 rounded-lg flex items-center justify-center">
-              <User size={18} className="text-white" strokeWidth={1.5} />
+          <div className="flex items-start justify-between gap-3 mb-4">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-md bg-white/5 border border-white/10 flex items-center justify-center">
+                <User size={16} className="text-gray-200" strokeWidth={1.6} />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-white">Landowner</h3>
+                <p className="text-[11px] text-gray-500 font-mono">/dashboard/user</p>
+              </div>
             </div>
-            {mounted && isConnected && Boolean((userData as readonly [string, string, boolean] | undefined)?.[2]) ? (
-              <span className="flex items-center gap-1 bg-green-500/10 border border-green-500/20 text-green-400 text-xs font-medium px-2.5 py-1 rounded-full">
-                <CheckCircle size={11} /> Registered
+            {mounted && isConnected && isRegistered ? (
+              <span className="flex items-center gap-1 text-[11px] text-green-400 bg-green-500/10 border border-green-500/20 px-2 py-0.5 rounded">
+                <CheckCircle size={10} /> registered
               </span>
             ) : (
-              <span className="flex items-center gap-1 bg-white/5 border border-white/10 text-gray-500 text-xs font-medium px-2.5 py-1 rounded-full">
-                Citizen
-              </span>
+              <span className="text-[11px] text-gray-500">unregistered</span>
             )}
           </div>
 
-          <h3 className="text-lg font-semibold text-white mb-1.5">Landowner Portal</h3>
-          <p className="text-gray-500 text-sm mb-5 leading-relaxed">
-            View and manage your property records. New users complete a one-time CNIC verification against Government records.
-          </p>
+          <dl className="text-[13px] divide-y divide-white/[0.04]">
+            <div className="flex justify-between py-1.5">
+              <dt className="text-gray-500">Mint, transfer, list, vote on succession</dt>
+            </div>
+            <div className="flex justify-between py-1.5">
+              <dt className="text-gray-500">CNIC verified once against govt registry</dt>
+            </div>
+            <div className="flex justify-between py-1.5">
+              <dt className="text-gray-500">All actions signed by your own wallet</dt>
+            </div>
+          </dl>
 
-          <ul className="space-y-2.5 mb-6">
-            {[
-              { icon: Search, text: "Search & verify property records" },
-              { icon: FileText, text: "View ownership documents & history" },
-              { icon: CheckCircle, text: "Blockchain-verified ownership proof" },
-            ].map(({ icon: Icon, text }, i) => (
-              <li key={i} className="flex items-center gap-2.5 text-sm text-gray-400">
-                <Icon size={14} className="text-gray-400 flex-shrink-0" strokeWidth={1.5} />
-                {text}
-              </li>
-            ))}
-          </ul>
+          <div className="mt-5 pt-4 border-t border-white/[0.06] flex items-center justify-between text-sm">
+            <span className="text-gray-400">
+              {mounted && isConnected && isRegistered ? 'Open dashboard' : 'Begin onboarding'}
+            </span>
+            <ArrowRight size={15} className="text-gray-400 group-hover:text-white group-hover:translate-x-0.5 transition-all" />
+          </div>
+        </button>
 
-          <button className="w-full bg-white hover:bg-gray-100 transition-colors py-2.5 rounded-lg text-sm font-medium text-black flex items-center justify-center gap-2">
-            {Boolean((userData as readonly [string, string, boolean] | undefined)?.[2]) ? "Enter Dashboard" : "Access User Portal"}
-            <ArrowRight size={15} className="group-hover:translate-x-0.5 transition-transform" />
-          </button>
-        </div>
-
-        {/* ADMIN PORTAL */}
-        <div
+        {/* ADMIN */}
+        <button
+          type="button"
           onClick={handleAdminPortalClick}
-          className="group relative cursor-pointer rounded-xl border border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.12] transition-colors duration-200 p-7 overflow-hidden"
+          className="group relative text-left rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.16] transition-colors p-6"
         >
-          {!mounted && (
-            <div className="absolute inset-0 bg-[#0a0b1e]/85 backdrop-blur-sm flex flex-col items-center justify-center z-20 rounded-2xl">
-              <Loader2 className="animate-spin text-indigo-400 mb-2" size={28} />
-              <p className="text-xs text-gray-400 font-medium">Initializing…</p>
+          <div className="flex items-start justify-between gap-3 mb-4">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-md bg-white/5 border border-white/10 flex items-center justify-center">
+                <Building2 size={16} className="text-gray-200" strokeWidth={1.6} />
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-white">Government / Developer</h3>
+                <p className="text-[11px] text-gray-500 font-mono">/dashboard/admin</p>
+              </div>
             </div>
-          )}
-
-          {/* Top row: icon + badge */}
-          <div className="flex items-start justify-between mb-5">
-            <div className="w-10 h-10 bg-white/5 border border-white/10 rounded-lg flex items-center justify-center">
-              <Building2 size={18} className="text-white" strokeWidth={1.5} />
-            </div>
-            <span className="flex items-center gap-1 bg-white/5 border border-white/10 text-gray-500 text-xs font-medium px-2.5 py-1 rounded-full">
-              <Lock size={10} /> Restricted
+            <span className="flex items-center gap-1 text-[11px] text-gray-500 bg-white/5 border border-white/10 px-2 py-0.5 rounded">
+              <Lock size={10} /> owner-only
             </span>
           </div>
 
-          <h3 className="text-lg font-semibold text-white mb-1.5">Government Officials Portal</h3>
-          <p className="text-gray-500 text-sm mb-5 leading-relaxed">
-            Manage land registrations, verify documents, and oversee on-chain transactions. Restricted to authorized Government wallets.
-          </p>
+          <dl className="text-[13px] divide-y divide-white/[0.04]">
+            <div className="flex justify-between py-1.5">
+              <dt className="text-gray-500">Initiate succession plans (multi-heir)</dt>
+            </div>
+            <div className="flex justify-between py-1.5">
+              <dt className="text-gray-500">Resolve disputes — force or revert</dt>
+            </div>
+            <div className="flex justify-between py-1.5">
+              <dt className="text-gray-500">Whitelist developer / authority wallets</dt>
+            </div>
+          </dl>
 
-          <ul className="space-y-2.5 mb-6">
-            {[
-              { icon: ShieldCheck, text: "Register & mint new property records" },
-              { icon: Database, text: "Verify & approve transactions on-chain" },
-              { icon: Lock, text: "Administrative oversight & full control" },
-            ].map(({ icon: Icon, text }, i) => (
-              <li key={i} className="flex items-center gap-2.5 text-sm text-gray-400">
-                <Icon size={14} className="text-gray-400 flex-shrink-0" strokeWidth={1.5} />
-                {text}
-              </li>
-            ))}
-          </ul>
-
-          <button className="w-full bg-transparent border border-white/20 hover:bg-white/5 transition-colors py-2.5 rounded-lg text-sm font-medium text-white flex items-center justify-center gap-2">
-            Access Admin Portal
-            <ArrowRight size={15} className="group-hover:translate-x-0.5 transition-transform" />
-          </button>
-        </div>
-      </div>
-
-      {/* Trust strip */}
-      <div className="max-w-4xl mx-auto border-t border-white/[0.06] pt-8 grid grid-cols-2 md:grid-cols-4 gap-4">
-        {trustBadges.map(({ icon: Icon, label }, i) => (
-          <div key={i} className="flex items-center gap-2.5">
-            <Icon size={14} className="text-gray-400 flex-shrink-0" strokeWidth={1.5} />
-            <span className="text-[11px] text-gray-400">{label}</span>
+          <div className="mt-5 pt-4 border-t border-white/[0.06] flex items-center justify-between text-sm">
+            <span className="text-gray-400">Open admin tools</span>
+            <ArrowRight size={15} className="text-gray-400 group-hover:text-white group-hover:translate-x-0.5 transition-all" />
           </div>
-        ))}
+        </button>
       </div>
 
       <UserAuthModal isOpen={isModalOpen} onClose={() => setModalOpen(false)} />
