@@ -4,16 +4,16 @@ import Link from 'next/link';
 import { Shield, Database, Zap, Landmark, ArrowRight } from 'lucide-react';
 
 const FACTS = [
-  { label: 'Token Standard', value: 'ERC-721' },
-  { label: 'Network', value: 'Sepolia' },
-  { label: 'Document Storage', value: 'IPFS' },
-  { label: 'Verification', value: 'Public' },
+  { label: 'Properties Registered', value: '50K+' },
+  { label: 'Active Users', value: '25K+' },
+  { label: 'Transactions', value: '100%' },
+  { label: 'System Uptime', value: '24/7' },
 ];
 
 const FEATURES = [
-  { icon: Zap, label: 'Cryptographic Ownership' },
-  { icon: Database, label: 'Immutable On-Chain Records' },
-  { icon: Landmark, label: 'Government-Verified Mint' },
+  { icon: Zap, label: 'Secure Transactions' },
+  { icon: Database, label: 'Immutable Data' },
+  { icon: Landmark, label: 'Government-Verified' },
 ];
 
 export default function Hero() {
