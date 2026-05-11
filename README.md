@@ -672,6 +672,62 @@ TIER 2 — LEGAL OVERRIDE  (escalation path)
 | Hardcoded religious law | None — the contract has no notion of Muslim/non-Muslim split. It enforces whatever the court ordered, period. |
 | One-NFT-per-heir subdivision | Forbidden — inheritance is layer-2 only. The tokenId is invariant. Heirs become co-shareholders of the same parcel. If they want physical division, that's a separate court-anchored `proposeSubdivision`. |
 
+### 🏘️ Legal Land Subdivision System (v8)
+
+Subdivision is the **only** operation in the contract that creates new land NFTs after import. It models the real-world legal act of splitting one parcel into N new ones — which is fundamentally different from co-ownership.
+
+#### Co-ownership vs. physical subdivision
+
+| | **Co-ownership** _(layer 2)_ | **Physical subdivision** _(layer 1)_ |
+|---|---|---|
+| What is it | Multiple addresses hold bps of ONE parcel | The parcel becomes TWO+ distinct parcels on the ground |
+| NFT effect | None — same tokenId, same identity | Parent NFT burned, child NFTs minted |
+| Authorisation | Voluntary trades / inheritance / market sales | Court order **+** survey document, both pinned on IPFS |
+| Reversibility | Trivial (share trades back) | Requires re-merger — a separate legal process |
+| Required role | Shareholders themselves | `SUBDIVISION_ORACLE_ROLE` proposes; current shareholders approve |
+| Examples | Three siblings co-own a 1-kanal plot; one sells her 20% | A 1-kanal plot is surveyed and split into a 0.6-kanal house plot and a 0.4-kanal commercial frontage |
+
+#### Why inheritance should NOT fragment land automatically
+
+When a holder dies leaving three children, the children typically become **co-owners** of one parcel (layer-2 redistribution). Forcing the parcel to physically split would:
+
+- require a survey + planning approval the contract cannot authorise,
+- produce three plots that may be too small to be legally useful or marketable,
+- break NFT identity continuity (provenance trackers, liens, indexers all lose their anchor),
+- impose physical division on heirs who might prefer to sell the whole parcel jointly or continue using it together.
+
+Inheritance therefore lives in layer 2; subdivision is a separate, deliberate, court-anchored layer-1 act.
+
+#### Why subdivision requires two legal-verification artefacts
+
+| Artefact | What it answers | Field |
+|---|---|---|
+| **Court order CID** | "May we do this?" — the legal authority for the split | `SubdivisionPlan.courtOrderCid` |
+| **Survey metadata CID** | "What exactly are the new parcels?" — boundaries, area, surveyor identity, new plot IDs | `SubdivisionPlan.surveyMetadataCid` |
+
+Both are required at `proposeSubdivision` and immutable thereafter. The on-chain record commits to BOTH the legal authority and the technical specification.
+
+#### Parent ↔ child lineage tracking
+
+Every child carries a pointer back to its parent; every parent carries the list of children it produced.
+
+| State | Purpose |
+|---|---|
+| `_parentOfLand[childId]` | direct parent (empty for top-level imports) |
+| `_childrenOfLand[parentId]` | array of immediate children |
+| `_subdivisionGeneration[landId]` | how many splits upstream (0 = import) |
+
+View functions:
+
+- `getParentLand(landId)` — direct parent
+- `getChildLands(landId)` — direct children
+- `getSubdivisionGeneration(landId)` — generation index
+- `getSubdivisionLineage(landId)` — full ancestry array from oldest down to `landId` (for title-chain due diligence)
+
+#### Tier-2 dispute resolution (matches v8 inheritance)
+
+`resolveSubdivisionDispute` now requires the same four audit anchors as the inheritance equivalent: `updatedCourtOrderCid`, `legalResolutionCid`, `overrideReason`, plus the auto-captured resolver/timestamp. Every override appends an immutable row to `_subdivisionLegalOverrides[parentLandId]`. `freezeSubdivisionForReview` lets the arbiter escalate independent of shareholder action.
+
 ### 🧮 The Fractional Ownership Model (carried from v6)
 
 ### 🧮 The Fractional Ownership Model
@@ -783,10 +839,11 @@ The system intentionally consolidates all logic into a single contract to minimi
 | **`freezeInheritanceForReview(landId, reason)`** _(new — tier-2 escalation)_ | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `boundedString` | Transitions `PENDING_INHERITANCE` → `LOCKED_INHERITANCE_DISPUTE` for formal legal review even without an heir dispute. Reason logged via `InheritanceFrozenForReview`. |
 | **`resolveInheritanceDispute(landId, forceExecute, updatedCourtOrderCid, legalResolutionCid, overrideReason)`** _(v8 — full audit metadata required)_ | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `nonReentrant`, `boundedString` × 3 | Force-execute (with updated court CID) OR cancel. Both paths append an immutable row to `_legalOverrides[landId]` and emit `LegalOverrideExecuted` with the full payload (resolver, timestamp, both CIDs, reason). |
 | **`resolveInheritanceDispute(landId, force, courtOrderCid)`** _(v7 — renamed + court CID)_ | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `nonReentrant`, `boundedString` | Force-execute (with court CID) or cancel |
-| **`proposeSubdivision(parentLandId, newLandIds[], newIpfsHashes[], newLandShareholders[][], newLandShares[][], courtOrderCid)`** _(v7)_ | Subdivision Oracle | `onlyRole(SUBDIVISION_ORACLE_ROLE)`, `whenNotPaused`, `landMustExist`, `onlyActive`, `boundedString` | Files a legal-subdivision plan (each child land's shares must sum to 10,000) |
-| **`approveSubdivision(parentLandId)`** _(v7)_ | Parent shareholder | `whenNotPaused`, `nonReentrant` | Vote yes; auto-executes when ALL current shareholders approve |
-| **`disputeSubdivision(parentLandId)`** _(v7)_ | Parent shareholder | `whenNotPaused` | Locks → `LOCKED_SUBDIVISION_DISPUTE` |
-| **`resolveSubdivisionDispute(parentLandId, force, courtOrderCid)`** _(v7)_ | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `nonReentrant`, `boundedString` | Force-execute (with court CID) or cancel |
+| **`proposeSubdivision(parentLandId, newLandIds[], newIpfsHashes[], newLandShareholders[][], newLandShares[][], courtOrderCid, surveyMetadataCid)`** _(v8 — survey CID required)_ | Subdivision Oracle | `onlyRole(SUBDIVISION_ORACLE_ROLE)`, `whenNotPaused`, `landMustExist`, `onlyActive`, `boundedString` × 2 | Files a legal-subdivision plan. **Both** the court order (legal authority) AND the survey metadata (technical specification) must be IPFS-pinned. Each child land's shares must sum to 10,000. |
+| **`approveSubdivision(parentLandId)`** | Parent shareholder | `whenNotPaused`, `nonReentrant` | Vote yes; auto-executes when ALL current shareholders approve |
+| **`disputeSubdivision(parentLandId)`** | Parent shareholder | `whenNotPaused` | Locks → `LOCKED_SUBDIVISION_DISPUTE` |
+| **`freezeSubdivisionForReview(parentLandId, reason)`** _(new — tier-2 escalation)_ | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `boundedString` | Lock for formal legal review without an heir/shareholder dispute |
+| **`resolveSubdivisionDispute(parentLandId, force, updatedCourtOrderCid, legalResolutionCid, overrideReason)`** _(v8 — full audit metadata)_ | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `nonReentrant`, `boundedString` × 3 | Force-execute OR cancel. Both paths append an immutable row to `_subdivisionLegalOverrides[parentLandId]`. |
 | **`grantOccupancy(landId, occupant, startTime, endTime, termsCid)`** _(v7)_ | Shareholder | `whenNotPaused`, `landMustExist`, `onlyActive`, `boundedString` | Record a time-bound right of use; does NOT affect the share ledger |
 | **`revokeOccupancy(landId, agreementId)`** _(v7)_ | Original grantor | `whenNotPaused` | Marks the agreement revoked |
 | `setGovtAuthority(wallet, status)` | Admin | `onlyRole(DEFAULT_ADMIN_ROLE)` | Grant/revoke `GOVT_AUTHORITY_ROLE` |
@@ -807,7 +864,9 @@ The system intentionally consolidates all logic into a single contract to minimi
 | `isImportVerified(landId, owner)` | Anyone | view | Whether `owner` has verified the current proposal |
 | `getPendingVerifiers(landId)` _(new)_ | Anyone | view | Subset of proposed owners who still haven't verified |
 | `getVerificationStatus(landId)` _(new)_ | Anyone | view | Aggregated `(status, verified, total, deadline, isExpired)` for the verification panel |
-| `getSubdivisionPlan(landId)` / `getSubdivisionPart(landId, i)` _(v7)_ | Anyone | view | Subdivision plan + per-child allocations |
+| `getSubdivisionPlan(landId)` / `getSubdivisionPart(landId, i)` | Anyone | view | Subdivision plan (incl. surveyMetadataCid) + per-child allocations |
+| **`getParentLand(landId)`** / **`getChildLands(landId)`** / **`getSubdivisionGeneration(landId)`** / **`getSubdivisionLineage(landId)`** _(v8)_ | Anyone | view | Parent-child relationships and full ancestry walk for title-chain due diligence |
+| **`getSubdivisionLegalOverrides(parentLandId)`** / **`getSubdivisionLegalOverride(parentLandId, i)`** / **`totalSubdivisionLegalOverrides(parentLandId)`** _(v8)_ | Anyone | view | Tier-2 audit log for subdivision overrides |
 | `getOccupancyAgreements(landId)` _(v7)_ | Anyone | view | All occupancy agreements (incl. revoked) |
 | `getAllLandRecordsPaginated(cursor, size)` | Anyone | view | Cursor-based admin pagination |
 | `pendingProceeds(account)` / `totalPendingWithdrawals()` | Anyone | view | Pull-payment balances |
@@ -1487,6 +1546,7 @@ flowchart LR
 | 18 | **v6 still treated the backend as a unilateral oracle**: `storeVerifiedLandRecord` minted the NFT immediately on the backend's say-so, with no on-chain check that the proposed co-owners agreed with the imported share split. A corrupt or erroneous backend could silently mint to wrong owners. The model also had no on-chain workflow for *deliberate* legal subdivision (when heirs actually do want separate plots) and no on-chain expression of occupancy / use-rights distinct from ownership. | **v7 hybrid-governance refactor:** Pakistani land governance is explicitly modelled as hybrid (chain holds identity; courts, the developer registry, and proposed owners themselves hold legal authority). Three changes anchor this: (a) **Land import is two-phase** — `proposeLandImport` files a record with proposed co-owners and shares; each owner calls `verifyLandImport`; the NFT mints + share ledger populates only after ALL verify. (b) **Legal subdivision is a first-class workflow** — `SUBDIVISION_ORACLE_ROLE` files a court-anchored plan with per-child shareholder/share allocations; ALL current shareholders must approve; on execution the parent NFT is burned (status → `SUBDIVIDED`, terminal) and N new child NFTs are minted with their own share ledgers. (c) **Occupancy / use-right agreements** are a separate ledger from ownership — any shareholder can grant a time-bound right of use to a non-owner; does NOT affect the share ledger. Every dispute-arbiter override now requires a `courtOrderCid` (IPFS) — every legal-authority override is publicly auditable. `BACKEND_ROLE` further split into `MINTER` / `INHERITANCE_ORACLE` / `SUBDIVISION_ORACLE` / `DISPUTE_ARBITER` for tightest least-privilege. Eight-state lifecycle. |
 | 19 | **v7 import flow could be stuck indefinitely** — without a deadline, a single non-responding proposed owner could permanently park a `landId` in the verification phase, blocking any subsequent re-import of the same parcel. The status name `PROPOSED` also under-communicated the consent-pending semantics to off-chain integrators. The audit panel had no atomic "show me everyone still owing a verification" view. | **v7 verification refinements:** (a) renamed `LandStatus.PROPOSED` → `LandStatus.PENDING_VERIFICATION` for clarity; (b) added `VERIFICATION_DURATION = 90 days` and stored `verificationDeadline` on every `ImportProposal`; `verifyLandImport` now reverts if past deadline; (c) added `expireLandImport(landId)` — public utility callable by anyone after the deadline elapses, deletes the shell so the `landId` is free for re-import; (d) emitted `verificationCount` / `ownersTotal` in `LandImportVerified` and `verificationDeadline` in `LandImportProposed` for indexers; (e) added `getPendingVerifiers(landId)` and `getVerificationStatus(landId)` views for the verification dashboard; (f) strengthened NatSpec under "WHY OWNER CONSENSUS IS NECESSARY", "WHY BACKEND AUTHORITY IS INTENTIONALLY LIMITED", and "WHY MINTING ONLY AFTER VERIFICATION". |
 | 20 | **The two-layer architecture (identity vs. ownership) was implicit** — the rationale lived only in spread-out NatSpec snippets, and there were no first-class projection views that exposed each layer separately. Integrators conflated `ownerOf(tokenId)` (which returns `address(this)` because the NFT is self-custodial) with legal ownership, even though legal ownership lives entirely in the share ledger. | **Identity / ownership separation made explicit.** Contract preamble gained a dedicated `TWO-LAYER ARCHITECTURE` block plus matching `WHY ERC-721 ALONE IS INSUFFICIENT FOR LAND` and `WHY OWNERSHIP REDISTRIBUTION DIFFERS FROM SUBDIVISION` sections. Section headers in the body now carry explicit `LAYER 1` / `LAYER 2` labels. New view-only structs: `LandIdentity` (pure layer-1 fields + derived `tokenId`) and `OwnershipSnapshot` (shareholders + shares + total + count). New external views: `getLandIdentity`, `getOwnershipSnapshot`, `getLandFullView` (both layers in one RPC). Key external functions (`transferShare`, `buyShare`, `initiateInheritance`, `proposeSubdivision`) now open with explicit `**LAYER-1 OP**` / `**LAYER-2 OP**` NatSpec tags so the reviewer always knows which layer a function mutates. No behavioural change — purely architectural-clarity refactor. |
+| 23 | **v7 subdivision was court-anchored but lacked technical specification and lineage tracking.** Only the court order CID was stored — no on-chain commitment to the actual survey document (boundaries, area, surveyor identity, new plot IDs). The contract recorded that a parent NFT had been burned and N children minted, but kept no direct parent-child pointers — reconstructing the lineage of any parcel required walking events. Subdivision dispute resolution used the v7 single-CID model and missed the v8 four-anchor audit upgrade. There was also no way for the arbiter to freeze a subdivision proposal for formal review without a shareholder disputing first. | **Legal-subdivision system (v8).** Added `surveyMetadataCid` field to `SubdivisionPlan` — both legal authority AND technical specification are now committed at proposal time. Added on-chain lineage state: `_parentOfLand`, `_childrenOfLand`, `_subdivisionGeneration`. Every child carries a back-pointer; every parent lists its children. New view `getSubdivisionLineage` walks the ancestry chain for title-chain due diligence. `resolveSubdivisionDispute` upgraded to the v8 four-anchor audit signature (`updatedCourtOrderCid`, `legalResolutionCid`, `overrideReason`); every call appends to `_subdivisionLegalOverrides`. New `freezeSubdivisionForReview(parentLandId, reason)` mirrors the inheritance escalation. New events: `SubdivisionFrozenForReview`, `SubdivisionLegalOverrideExecuted`, `ChildLandCreated`. New preamble block explains why co-ownership ≠ physical division, why inheritance should not fragment land automatically, and why subdivision requires both legal AND technical IPFS artefacts. |
 | 22 | **v7+ inheritance dispute resolution was thin on audit substance.** `resolveInheritanceDispute(landId, force, courtCid)` let the arbiter act with only one piece of evidence — the updated court order CID. There was no on-chain commitment to (a) the legal resolution document that adjudicated the dispute itself (a different artefact from the original court order), (b) the human-readable reason the arbiter chose force-execute vs cancel, or (c) a queryable history of every override action taken against a parcel. Cancellation carried no metadata at all. There was also no way for the arbiter to freeze a proposal for formal review without waiting for an heir to dispute it first. | **Two-tier dispute resolution (tier-1 voluntary consensus, tier-2 legal override).** New `LegalOverride` struct + `_legalOverrides[landId]` append-only audit log. `resolveInheritanceDispute` now REQUIRES `(updatedCourtOrderCid, legalResolutionCid, overrideReason)` on BOTH force-execute and cancel — every override commits four anchors (two CIDs + reason + resolver/timestamp). New `freezeInheritanceForReview(landId, reason)` lets the arbiter formally escalate a proposal independent of heir action. New events: `LegalOverrideExecuted` (replaces v7's `InheritanceDisputeResolved` with the full payload), `InheritanceFrozenForReview`. New views: `getLegalOverrides`, `getLegalOverride`, `totalLegalOverrides`. New preamble block "TWO-TIER INHERITANCE DISPUTE RESOLUTION" with three sub-sections explaining: (a) why unanimous-forever is unrealistic (inactive heirs, holdout extortion), (b) why legal enforceability exists (courts can compel non-cooperators), (c) why the hybrid override model is necessary (neither pure consensus nor unilateral arbiter authority is acceptable). |
 | 21 | **v7 inheritance was missing the heir-initiated step and lacked a court-anchored commitment hash.** The oracle could call `initiateInheritance` without referencing any on-chain appeal, so the audit trail had no "this was triggered by an heir filing X court order" anchor. The court-order CID was only added at force-resolve, so an indexer couldn't prove that a proposal's heir-share array matched a specific court order; a malicious oracle could re-propose with the same court order but different shares and the on-chain record would be ambiguous. There was also no voting deadline — a single non-responding heir could park a land in `PENDING_INHERITANCE` indefinitely. | **Hybrid inheritance workflow.** Added the heir-initiated appeal phase: `fileInheritanceAppeal(landId, deceasedHolder, courtOrderCid)` is callable by any registered citizen and emits `InheritanceAppealFiled` for backend pickup. Modified `initiateInheritance` to REQUIRE `courtOrderCid` and a (possibly zero) `appealId` at proposal time. Added `sharesHash = keccak256(abi.encode(heirs, heirShares, courtOrderCid))` committed into the proposal — auditors call new pure helper `computeSharesHash` and compare. Added `INHERITANCE_VOTING_DURATION = 30 days` + `votingDeadline` on every proposal; `approveSuccessionPlan` reverts after deadline; new `expireInheritance(landId)` public utility resets to `ACTIVE`. New events: `InheritanceAppealFiled`, `InheritanceExpired`; `InheritanceInitiated` now carries court CID, appealId, sharesHash, deadline. New views: `getInheritanceAppeal`, `getInheritanceAppealsForLand`, `totalInheritanceAppeals`. Contract preamble gained four new sections explaining: **why inheritance cannot realistically be fully decentralised**, **why courts calculate shares off-chain**, **why heirs only approve/dispute**, **why immutable proposals improve security**. |
 
