@@ -361,6 +361,179 @@ error LandRegistry__OccupancyAlreadyRevoked();
  *         bounds, custom errors throughout, `Address.sendValue` for ETH,
  *         maxPrice front-running guard on buys, decrease-only price updates,
  *         per-proposal nonce scoping for vote state.
+ *
+ *         ╔══════════════════════════════════════════════════════════════╗
+ *         ║ CONSOLIDATED SECURITY AUDIT (v5 → v8 trail)                    ║
+ *         ╚══════════════════════════════════════════════════════════════╝
+ *
+ *         Each row lists the PREVIOUS VULNERABILITY (or risk class) and
+ *         the IMPROVEMENT now in place. Together these are the contract's
+ *         trust-minimisation posture: every property below is a layer of
+ *         defence against a specific real-world failure mode.
+ *
+ *         (1) Reentrancy
+ *             PREV: payable functions doing external calls before state
+ *                   commits could be reentered to double-spend.
+ *             NOW : OZ `ReentrancyGuard.nonReentrant` on EVERY state-
+ *                   mutating external that touches NFTs or ETH:
+ *                   storeVerifiedLandRecord, verifyLandImport,
+ *                   resolveLandImportDispute, transferShare, buyShare,
+ *                   withdrawProceeds, approveSuccessionPlan,
+ *                   resolveInheritanceDispute, approveSubdivision,
+ *                   resolveSubdivisionDispute, emergencyWithdraw.
+ *
+ *         (2) Pause / emergency halt
+ *             PREV: no way to freeze new operations during an active
+ *                   incident.
+ *             NOW : OZ `Pausable` on every user-facing write; PAUSER_ROLE
+ *                   can halt/resume. CRITICAL: `withdrawProceeds` is
+ *                   intentionally NOT `whenNotPaused` — a pause must
+ *                   never trap user funds.
+ *
+ *         (3) Access control / role bundling
+ *             PREV: pre-v5 had a single privileged "backend" address;
+ *                   one leaked key = full ownership / inheritance /
+ *                   dispute powers.
+ *             NOW : six AccessControl roles, each independently
+ *                   grantable / revocable: MINTER_ROLE,
+ *                   INHERITANCE_ORACLE_ROLE, SUBDIVISION_ORACLE_ROLE,
+ *                   DISPUTE_ARBITER_ROLE, GOVT_AUTHORITY_ROLE,
+ *                   PAUSER_ROLE + DEFAULT_ADMIN_ROLE.
+ *
+ *         (4) Push payment / griefing
+ *             PREV: payable purchase paths PUSHED ETH inline to the
+ *                   seller — a malicious-receive() seller could grief
+ *                   every buyer.
+ *             NOW : pull-payment escrow via `_pendingWithdrawals` +
+ *                   `withdrawProceeds`. The only push remaining is the
+ *                   buyer's overpay REFUND, which is self-griefing if
+ *                   the buyer's own receive() reverts.
+ *
+ *         (5) CEI ordering
+ *             PREV: state writes after external calls allowed for
+ *                   inconsistent intermediate state if the external call
+ *                   reverted.
+ *             NOW : strict Checks-Effects-Interactions throughout —
+ *                   listings deleted before NFT transfer; withdrawal
+ *                   balance zeroed before sendValue.
+ *
+ *         (6) Replay across re-issued proposals
+ *             PREV: vote state keyed on (landId, voter) — a re-issued
+ *                   proposal (after dispute reset) inherited stale
+ *                   approvals/objections.
+ *             NOW : vote and heir-membership state keyed on
+ *                   (landId, proposalNonce, addr). Every
+ *                   initiateInheritance / proposeSubdivision /
+ *                   proposeLandImport increments the nonce → fresh slots.
+ *
+ *         (7) Duplicate / DoS in batched proposals
+ *             PREV: a single duplicate / collision in heir or new-
+ *                   landId arrays would cause the final vote to revert,
+ *                   permanently locking the proposal.
+ *             NOW : _validateOwnerShares + _validateInheritanceInputs +
+ *                   _validateSubdivisionInputs reject duplicates, zero
+ *                   addresses, collisions, oversize strings, share-sum
+ *                   mismatches AT PROPOSAL TIME — the final vote can
+ *                   never fail on validation.
+ *
+ *         (8) Unauthorised state transitions
+ *             PREV: state transitions implicit in function logic — easy
+ *                   to miss an edge case.
+ *             NOW : explicit 8-state LandStatus enum; every external
+ *                   write either uses the `onlyActive` modifier or
+ *                   checks status explicitly; status changes always emit
+ *                   `LandStatusChanged`.
+ *
+ *         (9) Dispute deadlock
+ *             PREV: a single dissenting heir or shareholder could
+ *                   permanently freeze a parcel.
+ *             NOW : tier-2 legal override (resolveInheritanceDispute /
+ *                   resolveSubdivisionDispute) lets the arbiter resolve
+ *                   stalled disputes — BUT each call must commit a
+ *                   court-order CID, a legal-resolution CID, a human
+ *                   reason, and the resolver identity to the audit log.
+ *
+ *        (10) Stuck proposals (inactive heirs)
+ *             PREV: a pending proposal could sit forever waiting for a
+ *                   non-responding heir.
+ *             NOW : verificationDeadline (90 days) + votingDeadline
+ *                   (30 days); after expiry anyone may call
+ *                   `expireLandImport` / `expireInheritance` to reset.
+ *
+ *        (11) Unauthorised backend finalisation
+ *             PREV: backend could mint land NFTs unilaterally — a
+ *                   trusted-operator failure mode.
+ *             NOW : import is two-phase. proposeLandImport reserves the
+ *                   landId; the NFT mints only after EVERY proposed
+ *                   owner has called verifyLandImport. Heir filing of
+ *                   inheritance is initiated by `fileInheritanceAppeal`
+ *                   from any registered citizen; the oracle proposal is
+ *                   itself immutable per nonce.
+ *
+ *        (12) Hidden share rewrites
+ *             PREV: a backend could file a proposal, see the heirs vote,
+ *                   then silently rewrite shares before execution.
+ *             NOW : `sharesHash = keccak256(heirs, shares, courtCid)`
+ *                   committed at propose time. Auditors call the pure
+ *                   `computeSharesHash` view off-chain and compare.
+ *
+ *        (13) Admin draining escrow
+ *             PREV: a generic emergencyWithdraw could sweep the contract
+ *                   balance including seller escrow.
+ *             NOW : `_totalPendingWithdrawals` accounting limits
+ *                   `emergencyWithdraw` to `balance - escrow`. Even an
+ *                   actively malicious admin cannot steal seller funds.
+ *
+ *        (14) Gas griefing via huge strings
+ *             PREV: a user could pin huge calldata strings into storage
+ *                   forever.
+ *             NOW : every user-supplied string passes through
+ *                   `boundedString` (≤ MAX_STRING_LENGTH = 256 bytes).
+ *
+ *        (15) Stale listings
+ *             PREV: a seller could list, transfer their shares away,
+ *                   and a buyer could still pay the seller for shares
+ *                   they no longer hold.
+ *             NOW : buyShare re-verifies the seller's CURRENT bps
+ *                   against the listing's `shareBpsForSale` and reverts
+ *                   if insufficient.
+ *
+ *        (16) Front-running on price
+ *             PREV: a seller could raise the listing price between a
+ *                   buyer's signing and the buyer's tx confirming.
+ *             NOW : `buyShare(landId, seller, maxPrice)` — buyer signs
+ *                   a price ceiling. Plus `updateListingPrice` allows
+ *                   DECREASE ONLY; raises require visible cancel +
+ *                   relist (which resets the 7-day deadline).
+ *
+ *        (17) External-call safety
+ *             PREV: manual `(bool ok,) = .call{value: x}("")` with
+ *                   inconsistent failure handling across callsites.
+ *             NOW : `Address.sendValue` everywhere — reverts with a
+ *                   descriptive reason if the recipient cannot accept.
+ *
+ *        (18) Transparency
+ *             PREV: state changes lacked structured event coverage.
+ *             NOW : every status change emits `LandStatusChanged`;
+ *                   every share change emits `ShareholderAdded /
+ *                   Removed / ShareTransferred`; every override (force
+ *                   OR cancel) emits a full-payload event; arbiter
+ *                   actions are immutably logged in `_legalOverrides` /
+ *                   `_subdivisionLegalOverrides`.
+ *
+ *        (19) Auditability of marketplace activity
+ *             PREV: indexers had to walk `_ownershipHistory` and filter
+ *                   for non-zero prices, picking up gift transfers too.
+ *             NOW : dedicated `_marketplaceHistory` populated only by
+ *                   settled `buyShare` calls.
+ *
+ *        (20) Backend trust assumptions
+ *             PREV: backend role centralised; one role had mint +
+ *                   inheritance + dispute + subdivision powers.
+ *             NOW : every backend action is either (a) a PROPOSAL that
+ *                   requires stakeholder consent to finalise, or (b) an
+ *                   OVERRIDE that requires court / legal CIDs in the
+ *                   audit log. No backend role can finalise alone.
  */
 contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     using Address for address payable;
@@ -565,15 +738,32 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         uint256 proposalNonce;
     }
 
+    /// @notice Broad legal category of a use-right agreement. Helps
+    ///         frontends render "Tenant: X (residential lease until DD-MM-YYYY)"
+    ///         vs. "Farmer-of-record: Y (agricultural lease until ...)".
+    ///         The actual legal terms always live in `termsCid` on IPFS —
+    ///         this enum is just a typed hint.
+    enum OccupancyCategory {
+        RESIDENTIAL_LEASE,
+        AGRICULTURAL_LEASE,
+        COMMERCIAL_LEASE,
+        USE_RIGHT, // generic non-lease right of use (easement, licence, etc.)
+        OTHER
+    }
+
     /// @notice A time-bound right of use granted by a shareholder to a
-    ///         non-owner. Does not touch the share ledger.
+    ///         non-owner. Does NOT touch the share ledger and NEVER mints
+    ///         or burns NFTs. See "OCCUPANCY VS OWNERSHIP VS SUBDIVISION"
+    ///         in the section 12.h preamble for the full rationale.
     struct OccupancyAgreement {
         uint64 id;
+        OccupancyCategory category;
         address grantor; // shareholder who granted
         address occupant;
         uint64 startTime;
         uint64 endTime;
-        string termsCid; // IPFS CID for the full lease/agreement document
+        string termsCid; // IPFS CID for the full lease/agreement document (REQUIRED)
+        string descriptionCid; // OPTIONAL extra metadata CID (photos, conditions, addenda) — empty string if unused
         bool isRevoked;
     }
 
@@ -880,15 +1070,17 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         uint256 tokenId
     );
 
-    // Occupancy (v7) ---------------------------------------------------------
+    // Occupancy / use-right (v7 + v8 category/metadata) ----------------------
     event OccupancyGranted(
         string indexed landId,
         uint64 indexed agreementId,
         address indexed grantor,
+        OccupancyCategory category,
         address occupant,
         uint64 startTime,
         uint64 endTime,
-        string termsCid
+        string termsCid,
+        string descriptionCid
     );
     event OccupancyRevoked(string indexed landId, uint64 indexed agreementId, address indexed grantor);
 
@@ -2119,46 +2311,133 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     }
 
     // ------------------------------------------------------------------------
-    // 12.h Occupancy / use-right (v7)
+    // 12.h Occupancy / use-right — SEPARATE LEDGER, never touches shares
+    //
+    // ╔══════════════════════════════════════════════════════════════════╗
+    // ║ DIFFERENCE BETWEEN OWNERSHIP AND OCCUPANCY                         ║
+    // ╚══════════════════════════════════════════════════════════════════╝
+    //
+    // OWNERSHIP (layer 2)            OCCUPANCY (this module)
+    //   what fraction of legal       who has the physical/legal RIGHT TO
+    //   rights you hold              USE the parcel right now
+    //
+    //   recorded in _shareBps        recorded in _occupancyAgreements
+    //   time-unlimited until         time-bounded (startTime → endTime)
+    //   transferred/inherited
+    //   transferable as              cannot be transferred — only
+    //   marketplace shares           granted afresh or revoked
+    //   inherits across the          extinguishes (at the latest) at
+    //   holder's death               endTime regardless of who owns
+    //                                the parcel
+    //   touches the share ledger     NEVER touches the share ledger
+    //                                NEVER moves the NFT
+    //
+    // EXAMPLE: two heirs may each OWN 50% of a house. By private
+    // agreement (lease), one OCCUPIES the upper floor while the other
+    // OCCUPIES the lower floor. The 50/50 ownership split lives in
+    // `_shareBps`; the upper/lower physical arrangement is documented
+    // in two OccupancyAgreement rows that point to the legal agreements
+    // on IPFS. The contract makes no attempt to algorithmically assign
+    // "which physical portion" — only the OFF-CHAIN agreement says so.
+    //
+    // ╔══════════════════════════════════════════════════════════════════╗
+    // ║ DIFFERENCE BETWEEN OCCUPANCY AND SUBDIVISION                       ║
+    // ╚══════════════════════════════════════════════════════════════════╝
+    //
+    // Occupancy is REVERSIBLE and DOES NOT CREATE NFTs.
+    //   - granted by any shareholder
+    //   - bounded by `endTime`; auto-extinguishes
+    //   - revocable by the original grantor at any time
+    //   - parent parcel remains ONE parcel with ONE NFT
+    //
+    // Subdivision is IRREVERSIBLE (without re-merger) and DOES CREATE NFTs.
+    //   - filed by SUBDIVISION_ORACLE_ROLE
+    //   - requires court order + survey document (both on IPFS)
+    //   - requires UNANIMOUS shareholder approval
+    //   - parent NFT is BURNED; N children minted
+    //
+    // Picking the wrong tool produces wrong on-chain records. If two
+    // heirs really mean "we co-own and split the use" → use occupancy.
+    // If they really mean "we want two distinct legal parcels" → use
+    // subdivision.
+    //
+    // ╔══════════════════════════════════════════════════════════════════╗
+    // ║ WHY OCCUPANCY ALLOCATION REMAINS OFF-CHAIN                         ║
+    // ╚══════════════════════════════════════════════════════════════════╝
+    //
+    // "Who occupies which physical portion" is a question of:
+    //   • physical reality (which floor; which corner; which acres)
+    //   • mutual agreement among co-owners
+    //   • lease / licence terms specific to each occupancy
+    //   • local zoning / use restrictions
+    // None of these can be captured exhaustively in on-chain data. The
+    // contract therefore stores POINTERS — the `termsCid` (mandatory) and
+    // `descriptionCid` (optional) point to the human-readable legal
+    // documents on IPFS. The on-chain ledger is the AUDIT TRAIL — who
+    // granted what to whom and when — not the substantive agreement.
+    //
+    // GRANT MODEL: any single shareholder can grant unilaterally. This
+    // matches Pakistani practice where one co-owner typically manages
+    // tenancy. Multiple concurrent agreements by different shareholders
+    // are permitted; off-chain agreement among co-owners is the
+    // canonical conflict-resolution mechanism. The future option to
+    // require unanimous consent is left for v9.
     // ------------------------------------------------------------------------
 
     /**
-     * @notice Any shareholder may grant a time-bound right of use to an
-     *         occupant. Occupancy does NOT affect the share ledger.
+     * @notice Grant a time-bound right of use on `landId`.
      *
-     * @dev    SIMPLIFIED MODEL: any single shareholder can grant
-     *         unilaterally — matches Pakistani practice where one
-     *         co-owner typically manages tenancy. Multiple concurrent
-     *         agreements by different shareholders are allowed; real-
-     *         world conflicts among co-owners are resolved off-chain.
-     *         A future v8 could require unanimous-consent grant — out
-     *         of scope here.
+     * @param  category        Typed category (RESIDENTIAL_LEASE,
+     *                         AGRICULTURAL_LEASE, COMMERCIAL_LEASE,
+     *                         USE_RIGHT, OTHER). Display hint for UIs;
+     *                         the binding legal text is in `termsCid`.
+     * @param  termsCid        REQUIRED IPFS CID of the lease / agreement
+     *                         document. Bounded.
+     * @param  descriptionCid  OPTIONAL extra metadata CID (photos,
+     *                         conditions, addenda). Empty string if unused.
      */
     function grantOccupancy(
         string calldata landId,
+        OccupancyCategory category,
         address occupant,
         uint64 startTime,
         uint64 endTime,
-        string calldata termsCid
+        string calldata termsCid,
+        string calldata descriptionCid
     ) external whenNotPaused landMustExist(landId) onlyActive(landId) boundedString(termsCid) returns (uint64 agreementId) {
         if (occupant == address(0)) revert LandRegistry__ZeroAddress();
         if (_shareBps[landId][msg.sender] == 0) revert LandRegistry__NotAShareholder(msg.sender);
         if (startTime >= endTime || endTime <= block.timestamp) revert LandRegistry__InvalidOccupancyPeriod();
+        // descriptionCid is optional: if non-empty it must be bounded.
+        uint256 dLen = bytes(descriptionCid).length;
+        if (dLen > MAX_STRING_LENGTH) revert LandRegistry__InvalidStringLength();
 
         agreementId = uint64(_occupancyAgreements[landId].length);
         _occupancyAgreements[landId].push(
             OccupancyAgreement({
                 id: agreementId,
+                category: category,
                 grantor: msg.sender,
                 occupant: occupant,
                 startTime: startTime,
                 endTime: endTime,
                 termsCid: termsCid,
+                descriptionCid: descriptionCid,
                 isRevoked: false
             })
         );
 
-        emit OccupancyGranted(landId, agreementId, msg.sender, occupant, startTime, endTime, termsCid);
+        emit OccupancyGranted(
+            landId,
+            agreementId,
+            msg.sender,
+            category,
+            occupant,
+            startTime,
+            endTime,
+            termsCid,
+            descriptionCid
+        );
     }
 
     function revokeOccupancy(string calldata landId, uint64 agreementId) external whenNotPaused {
@@ -2996,6 +3275,43 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         OccupancyAgreement[] storage agreements = _occupancyAgreements[landId];
         if (agreementId >= agreements.length) revert LandRegistry__OccupancyNotFound(agreementId);
         return agreements[agreementId];
+    }
+
+    /// @notice Only the agreements that are currently in force:
+    ///         not revoked, and within their `[startTime, endTime)` window.
+    ///         For the full audit (including revoked / expired) use
+    ///         `getOccupancyAgreements`.
+    function getActiveOccupancyAgreements(
+        string calldata landId
+    ) external view returns (OccupancyAgreement[] memory active) {
+        OccupancyAgreement[] storage all = _occupancyAgreements[landId];
+        uint256 n = all.length;
+        uint256 activeCount;
+        for (uint256 i = 0; i < n; ) {
+            OccupancyAgreement storage a = all[i];
+            if (!a.isRevoked && a.startTime <= block.timestamp && block.timestamp < a.endTime) {
+                unchecked {
+                    ++activeCount;
+                }
+            }
+            unchecked {
+                ++i;
+            }
+        }
+        active = new OccupancyAgreement[](activeCount);
+        uint256 j;
+        for (uint256 i = 0; i < n; ) {
+            OccupancyAgreement storage a = all[i];
+            if (!a.isRevoked && a.startTime <= block.timestamp && block.timestamp < a.endTime) {
+                active[j] = a;
+                unchecked {
+                    ++j;
+                }
+            }
+            unchecked {
+                ++i;
+            }
+        }
     }
 
     // Misc views -------------------------------------------------------------
