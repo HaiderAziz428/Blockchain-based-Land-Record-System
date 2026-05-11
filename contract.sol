@@ -3,10 +3,6 @@ pragma solidity 0.8.24;
 
 // ============================================================================
 // IMPORTS
-// ----------------------------------------------------------------------------
-// Only battle-tested OpenZeppelin primitives. No custom access-control, no
-// custom pause logic, no hand-rolled reentrancy guard, no hand-rolled ETH
-// transfer helper. Every primitive below has been audited multiple times.
 // ============================================================================
 
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
@@ -17,10 +13,6 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 
 // ============================================================================
 // CUSTOM ERRORS
-// ----------------------------------------------------------------------------
-// Custom errors save ~50 gas per revert vs. string reasons and give callers a
-// machine-parseable failure mode. Every revert in this contract uses one of
-// these — no `require(..., "string")` anywhere.
 // ============================================================================
 
 error LandRegistry__ZeroAddress();
@@ -31,22 +23,24 @@ error LandRegistry__NotAuthorizedHolder(address account);
 error LandRegistry__LandAlreadyExists(string landId);
 error LandRegistry__LandNotFound(string landId);
 error LandRegistry__LandNotActive(string landId);
-error LandRegistry__NotLandOwner(address caller, string landId);
 error LandRegistry__SelfTransfer();
 error LandRegistry__InvalidPrice();
+error LandRegistry__InvalidShare();
+error LandRegistry__InsufficientShare(address holder, uint16 held, uint16 required);
+error LandRegistry__ShareTotalMismatch(uint16 provided, uint16 expected);
 error LandRegistry__PriceMustDecrease(uint256 currentPrice, uint256 attempted);
 error LandRegistry__PriceExceedsMax(uint256 actualPrice, uint256 maxPrice);
-error LandRegistry__InvalidMetadata();
-error LandRegistry__ListingNotActive(string landId);
-error LandRegistry__ListingExpired(string landId);
+error LandRegistry__ListingNotActive(string landId, address seller);
+error LandRegistry__ListingExpired(string landId, address seller);
 error LandRegistry__InsufficientPayment(uint256 sent, uint256 required);
 error LandRegistry__SellerCannotBuy();
 error LandRegistry__InheritanceArrayMismatch();
 error LandRegistry__NoHeirs();
 error LandRegistry__TooManyHeirs(uint256 provided, uint256 max);
+error LandRegistry__TooManyShareholders(uint256 current, uint256 max);
 error LandRegistry__DuplicateHeir(address heir);
-error LandRegistry__DuplicateNewLandId(string landId);
-error LandRegistry__HeirIsCurrentOwner(address heir);
+error LandRegistry__HeirIsDeceased(address heir);
+error LandRegistry__DeceasedHasNoShares(address deceased, string landId);
 error LandRegistry__NoPendingPlan(string landId);
 error LandRegistry__PlanAlreadyExecuted(string landId);
 error LandRegistry__AlreadyVoted();
@@ -54,17 +48,14 @@ error LandRegistry__NotAnHeir(address caller);
 error LandRegistry__LandNotDisputed(string landId);
 error LandRegistry__NoBalance();
 error LandRegistry__NoStrayBalance();
+error LandRegistry__NftNonTransferable();
 
 // ============================================================================
-// INTERFACES
-// ----------------------------------------------------------------------------
-// None required externally.
+// INTERFACES — none required externally
 // ============================================================================
 
 // ============================================================================
-// LIBRARIES
-// ----------------------------------------------------------------------------
-// All utilities come from OpenZeppelin imports above.
+// LIBRARIES — utilities sourced from OpenZeppelin imports
 // ============================================================================
 
 // ============================================================================
@@ -72,69 +63,97 @@ error LandRegistry__NoStrayBalance();
 // ============================================================================
 
 /**
- * @title  LandRegistry (security-hardened v5)
+ * @title  LandRegistry (fractional-ownership v6)
  * @author LandLedger FYP Team
- * @notice On-chain allotment registry for new Pakistani housing societies.
- *         Each plot is a unique ERC-721; ownership, marketplace sales, and
- *         multi-heir inheritance are enforced by this contract. Off-chain
- *         documents (deed scans, listing photos, ERC-721 metadata JSON)
- *         live on IPFS and are referenced by CID — only the CID is stored
- *         on-chain.
  *
- * @dev    SECURITY POSTURE (v5 vs v4):
+ * @notice On-chain allotment registry. Each land is a unique ERC-721 whose
+ *         tokenId persists for the lifetime of the parcel. **Ownership is
+ *         fractional**: every land has 10,000 basis points (= 100%) of
+ *         shares distributed among one or more holders. Direct transfers,
+ *         marketplace sales, and inheritance all operate on basis-point
+ *         shares of a single existing NFT — never on duplicate NFTs.
  *
- *         1. **Role separation.** The single `BACKEND_ROLE` of v4 is split
- *            into three least-privilege roles: `MINTER_ROLE` (mint only),
- *            `INHERITANCE_ORACLE_ROLE` (initiate succession only),
- *            `DISPUTE_ARBITER_ROLE` (resolve disputes only). Compromise of
- *            one key does not expose the others.
+ * @dev    WHY FRACTIONAL OWNERSHIP (v6 architectural rationale)
+ *         --------------------------------------------------------------
+ *         v5 and earlier modelled "one land = one owner" and handled
+ *         inheritance by **burning the original NFT and minting a fresh
+ *         NFT for each heir**. That model is conceptually wrong for at
+ *         least three reasons:
  *
- *         2. **Pull-payment escrow.** Sale proceeds are credited to
- *            `_pendingWithdrawals[seller]` rather than pushed via `.call`.
- *            A seller pulls funds via `withdrawProceeds()`. This eliminates
- *            the entire class of "seller is a contract whose receive()
- *            reverts" griefing vectors.
+ *           1. **Inheritance does not physically subdivide land.** When
+ *              an allottee dies leaving three children, those three
+ *              children most commonly become CO-OWNERS of the same plot.
+ *              They do not magically receive three new physically distinct
+ *              plots. v5 forced subdivision-by-minting; v6 reflects what
+ *              actually happens in DHA / Bahria / private-society
+ *              succession cases.
  *
- *         3. **Front-running guard on buyLand.** The buyer passes
- *            `maxPrice`; the tx reverts if the seller raised the listing
- *            price between sign and confirm.
+ *           2. **NFT identity continuity is lost on inheritance.** v5
+ *              burned the original tokenId and assigned new IDs to heirs,
+ *              breaking any external system that anchored on the original
+ *              tokenId (provenance trackers, lien holders, indexers). v6
+ *              keeps the same tokenId from mint to forever — heirs simply
+ *              replace the deceased in the share ledger.
  *
- *         4. **Decrease-only price updates.** `updateListingPrice` allows
- *            lowering only; to raise, a seller must cancel + relist (which
- *            visibly resets the 7-day clock).
+ *           3. **The marketplace cannot express partial sales.** A holder
+ *              who owns 100% of a plot but only wants to sell 30% had no
+ *              way to express that in v5. v6 lists shares (in bps), so
+ *              partial sales are first-class.
  *
- *         5. **Pause does not trap funds.** `withdrawProceeds` is NOT
- *            `whenNotPaused` — sellers can always pull their proceeds even
- *            during an emergency halt. The pause is for new operations.
+ *         BASIS POINTS (bps) — 10,000 = 100%
+ *         --------------------------------------------------------------
+ *         We use uint16 basis points rather than percentages because:
  *
- *         6. **Emergency withdraw cannot drain user balances.**
- *            `_totalPendingWithdrawals` is tracked; `emergencyWithdraw`
- *            sweeps only `address(this).balance - _totalPendingWithdrawals`.
+ *           • Solidity has no native fractional/decimal type — bps gives
+ *             us 4 significant figures (0.01% resolution) using only
+ *             integer math.
+ *           • uint16 (max 65,535) comfortably fits TOTAL_SHARES = 10,000,
+ *             so 16 bits per shareholder is enough — saves storage vs
+ *             uint256 percentages.
+ *           • Industry standard: every DeFi fee/share contract uses bps,
+ *             so auditors and integrators recognise the pattern instantly.
  *
- *         7. **String length bounds.** Every user-supplied string is
- *            capped at `MAX_STRING_LENGTH = 256` bytes to prevent gas
- *            griefing via giant strings in storage.
+ *         NFT CUSTODY MODEL
+ *         --------------------------------------------------------------
+ *         The ERC-721 NFT for each land is **self-custodial**: it is
+ *         minted to `address(this)` and never moves. `ownerOf(tokenId)`
+ *         therefore returns the contract address itself. Meaningful
+ *         ownership lives in the basis-point share ledger
+ *         (`_shareBps[landId][holder]`), not in `ownerOf`. The `_update`
+ *         override below enforces non-transferability — any attempt to
+ *         move a land NFT off the registry reverts.
  *
- *         8. **nonReentrant on every state-mutating NFT path.** Not just
- *            `buyLand`. The ERC-721 `_safeMint` / `_safeTransfer` paths
- *            invoke `onERC721Received` on contract recipients — a
- *            malicious receiver could attempt to reenter. Guarded.
+ *         This trades external-marketplace visibility (OpenSea would see
+ *         the contract as holder) for a coherent multi-owner model —
+ *         appropriate for a closed governance-grade registry, which is
+ *         what this contract is.
  *
- *         9. **Heir cannot be the current owner.** Prevents the corner
- *            case where the deceased holder is listed as their own heir
- *            (would otherwise mint a fresh land to the burnt account).
+ *         INVARIANTS (must hold for every ACTIVE land)
+ *         --------------------------------------------------------------
+ *           I1.  Σ _shareBps[landId][h] for h in _shareholders[landId]
+ *                                                    == TOTAL_SHARES (10000)
+ *           I2.  _shareBps[landId][h] > 0  ⇔  h ∈ _shareholders[landId]
+ *           I3.  _shareholders[landId] contains no duplicates
+ *           I4.  _shareholders[landId].length ≤ MAX_SHAREHOLDERS
+ *           I5.  Every h ∈ _shareholders[landId] is an authorized holder
+ *                (registered citizen OR govt-authority role)
  *
- *         10. **`Address.sendValue`** for outgoing transfers — wraps
- *             `.call` with a proper revert reason and is the OZ-recommended
- *             pattern.
+ *         All share-mutating helpers (`_increaseShare`, `_decreaseShare`)
+ *         are written so that, applied in matched pairs (one decrease + one
+ *         increase of the same amount), Σ shares is conserved. Inheritance
+ *         executes its share redistribution under that same conservation
+ *         rule (sum of heir shares == deceased's full share). The invariants
+ *         therefore hold by construction.
  *
- *         11. **CNIC plaintext caveat.** Public-chain limitation — strings
- *             are world-readable. Production requires a hash commitment or
- *             zero-knowledge CNIC proof; not fixable at this layer.
- *
- *         12. **DEFAULT_ADMIN_ROLE should be a multisig.** The contract
- *             does not enforce this, but a single-key admin defeats the
- *             role separation above. Use Safe / Gnosis in production.
+ *         SECURITY POSTURE (preserved from v5)
+ *         --------------------------------------------------------------
+ *         All of v5's hardening is retained: AccessControl with role
+ *         separation (MINTER / INHERITANCE_ORACLE / DISPUTE_ARBITER),
+ *         Pausable, ReentrancyGuard on every state-mutating external
+ *         function that touches NFTs or ETH, pull-payment escrow with
+ *         `_totalPendingWithdrawals` accounting, MAX_STRING_LENGTH input
+ *         bounds, custom errors throughout, `Address.sendValue` for all
+ *         outgoing transfers.
  */
 contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     using Address for address payable;
@@ -149,19 +168,30 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         COMMERCIAL
     }
 
-    /// @dev `INHERITED` is terminal — the landId persists for history but
-    ///      the NFT is burned. Every state-changing user action is gated
-    ///      on `ACTIVE` via the `onlyActive` modifier.
+    /// @notice Lifecycle states.
+    ///
+    /// @dev    Note: v5 had a terminal `INHERITED` state because inheritance
+    ///         burned the land NFT. v6 retains the land NFT through
+    ///         inheritance — only the share ledger changes — so the only
+    ///         lifecycle states needed are ACTIVE plus the two transient
+    ///         locks. A land that has been inherited returns to ACTIVE with
+    ///         a new set of shareholders.
     enum LandStatus {
         ACTIVE,
         PENDING_INHERITANCE,
-        LOCKED_DISPUTE,
-        INHERITED
+        LOCKED_DISPUTE
     }
 
+    /**
+     * @notice On-chain record of a land parcel.
+     *
+     * @dev    v5 stored `currentOwner` and `cnic` on the record. v6 removes
+     *         both — they don't have a single meaningful value once a land
+     *         can have multiple co-owners with different CNICs. Look up
+     *         shareholders via `getShareholders(landId)` and their CNICs
+     *         via `getUser(holder).cnic` instead.
+     */
     struct LandRecord {
-        address currentOwner;
-        string cnic;
         string landId;
         string ipfsHash; // ERC-721 metadata JSON CID
         LandType landType;
@@ -175,7 +205,16 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         bool isRegistered;
     }
 
+    /**
+     * @notice One per (landId, seller) — a seller may list any portion of
+     *         their share for sale at any time.
+     *
+     * @dev    `shareBpsForSale` is what the seller is offering; `price` is
+     *         the total bundle price (not per-bps). Buyers pay this amount
+     *         to acquire exactly that share.
+     */
     struct Listing {
+        uint16 shareBpsForSale;
         uint256 price;
         address seller;
         bool isActive;
@@ -183,19 +222,40 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         string metadataHash;
     }
 
-    struct OwnershipHistory {
-        address owner;
+    /**
+     * @notice One row in a land's append-only ownership ledger.
+     *
+     * @dev    v5 logged ONE event per ownership change (a single owner
+     *         replaces another). v6 logs one row per shareholder change so
+     *         a single inheritance to N heirs writes N rows — every basis
+     *         point of every transition is auditable.
+     */
+    struct OwnershipChange {
+        address from; // address(0) for the initial mint
+        address to;
+        uint16 shareBps;
         uint64 timestamp;
-        uint256 price;
+        uint256 price; // 0 for non-sale events (mint, gift, inheritance)
     }
 
-    /// @dev Vote and heir-membership state live in separate mappings keyed
-    ///      by `proposalNonce`; a re-issued proposal (after a dispute
-    ///      reset) bumps the nonce and gets fresh state automatically.
+    /**
+     * @notice An open succession proposal.
+     *
+     * @dev    v6 ENTIRELY redesigns inheritance:
+     *
+     *         • v5 fields `newLandIds[]` and `newIpfsHashes[]` are GONE —
+     *           inheritance no longer mints new lands.
+     *         • `deceasedHolder` is now explicit. The oracle identifies
+     *           whose share is being redistributed (a land may have many
+     *           co-owners; only one dies in a given proposal).
+     *         • `heirShares[]` is parallel to `heirs[]` — basis points
+     *           that MUST sum to the deceased's current share on this land.
+     *           This preserves invariant I1.
+     */
     struct InheritanceRequest {
+        address deceasedHolder;
         address[] heirs;
-        string[] newLandIds;
-        string[] newIpfsHashes;
+        uint16[] heirShares;
         uint256 approvalCount;
         bool isExecuted;
         uint256 proposalNonce;
@@ -205,69 +265,75 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // 8. STATE VARIABLES
     // ========================================================================
 
-    // --- Roles (split for least privilege) -----------------------------------
-    //
-    // SECURITY: v4 used a single `BACKEND_ROLE` for mint, inheritance, and
-    // dispute resolution. A leaked key compromised all three powers at once.
-    // v5 splits them so each privileged off-chain service can hold the
-    // narrowest possible authority.
-
-    /// @notice May call `storeVerifiedLandRecord` (mint).
+    // --- Roles (split for least privilege, retained from v5) -----------------
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
-    /// @notice May call `initiateInheritance` (open a succession plan).
     bytes32 public constant INHERITANCE_ORACLE_ROLE = keccak256("INHERITANCE_ORACLE_ROLE");
-    /// @notice May call `resolveDispute` (force-execute or reset a locked plan).
     bytes32 public constant DISPUTE_ARBITER_ROLE = keccak256("DISPUTE_ARBITER_ROLE");
-    /// @notice Whitelisted institutional wallets — may hold land without a CNIC.
     bytes32 public constant GOVT_AUTHORITY_ROLE = keccak256("GOVT_AUTHORITY_ROLE");
-    /// @notice May pause/unpause every user-facing write.
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
     // --- Constants -----------------------------------------------------------
+
+    /// @notice 100% expressed in basis points. Every land's total share
+    ///         always equals this (invariant I1).
+    uint16 public constant TOTAL_SHARES = 10_000;
+
     uint64 public constant LISTING_DURATION = 7 days;
     uint256 public constant MAX_HEIRS = 50;
-    /// @notice Hard cap on every user-supplied string. Prevents an attacker
-    ///         from pinning the contract with 100 MB of calldata that would
-    ///         then occupy storage forever.
+
+    /// @notice Cap on simultaneous shareholders per land. Prevents an
+    ///         attacker from chaining tiny transfers to bloat
+    ///         `_shareholders[landId]` and grief subsequent enumerations.
+    uint256 public constant MAX_SHAREHOLDERS = 100;
+
     uint256 public constant MAX_STRING_LENGTH = 256;
 
-    // --- Identity module -----------------------------------------------------
+    // --- Identity ------------------------------------------------------------
     mapping(address => UserProfile) private _users;
     mapping(string => address) private _cnicToAddress;
 
-    // --- Land data module ----------------------------------------------------
+    // --- Land core -----------------------------------------------------------
     mapping(string => LandRecord) private _landRecords;
-    mapping(string => OwnershipHistory[]) private _ownershipHistory;
     mapping(string => bool) private _landExists;
-
-    // --- NFT optimisation ----------------------------------------------------
     mapping(uint256 => string) private _tokenIdToLandId;
-
-    // --- Indexing module -----------------------------------------------------
     string[] private _allLandIds;
+
+    // --- Share ledger (v6 core data structure) -------------------------------
+    //
+    // Three parallel structures:
+    //   _shareholders[landId]                 ordered list (for enumeration)
+    //   _shareBps[landId][holder]             O(1) share lookup
+    //   _shareholderIndex[landId][holder]     O(1) position-in-list lookup
+    //                                         (enables swap-and-pop removal)
+    //
+    // A holder is "present" on landId iff _shareBps[landId][holder] > 0
+    // (invariant I2). The list and index are kept consistent with the bps
+    // map by `_increaseShare` and `_decreaseShare`.
+    mapping(string => address[]) private _shareholders;
+    mapping(string => mapping(address => uint16)) private _shareBps;
+    mapping(string => mapping(address => uint256)) private _shareholderIndex;
+
+    // --- Reverse index: which lands does each holder have shares in? --------
     mapping(address => string[]) private _ownerToLands;
     mapping(address => mapping(string => uint256)) private _ownerLandIndex;
 
-    // --- Marketplace module --------------------------------------------------
-    mapping(string => Listing) private _landListings;
+    // --- Ownership history --------------------------------------------------
+    mapping(string => OwnershipChange[]) private _ownershipHistory;
 
-    // --- Inheritance module --------------------------------------------------
+    // --- Marketplace listings (one per (landId, seller)) ---------------------
+    //
+    // SECURITY: v5 keyed listings by landId alone — only one listing per land
+    // was possible. With fractional ownership, multiple shareholders can each
+    // list a portion of their share concurrently, so v6 keys by (landId, seller).
+    mapping(string => mapping(address => Listing)) private _listings;
+
+    // --- Inheritance --------------------------------------------------------
     mapping(string => InheritanceRequest) private _inheritanceRequests;
     mapping(string => mapping(uint256 => mapping(address => bool))) private _heirApproved;
     mapping(string => mapping(uint256 => mapping(address => bool))) private _isHeirFor;
 
-    // --- Pull-payment escrow -------------------------------------------------
-    //
-    // SECURITY: v4 pushed sale proceeds to the seller inside `buyLand` via
-    // `.call{value: price}("")`. If the seller was a contract whose
-    // `receive()` reverted, the entire purchase reverted — a malicious
-    // seller could grief any buyer by listing then deploying a reverting
-    // receiver. The pull-payment pattern below credits the seller's balance
-    // synchronously, and the seller withdraws at their own convenience.
+    // --- Pull-payment escrow (retained from v5) ------------------------------
     mapping(address => uint256) private _pendingWithdrawals;
-    /// @dev Sum of all credited-but-unwithdrawn balances. Tracked so the
-    ///      admin's `emergencyWithdraw` can sweep STRAY ETH only and never
-    ///      accidentally drain a seller's earnings.
     uint256 private _totalPendingWithdrawals;
 
     // ========================================================================
@@ -275,19 +341,65 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // ========================================================================
 
     event UserRegistered(address indexed user, string name, string cnic);
-    event LandMinted(address indexed owner, string indexed landId, LandType lType, uint256 tokenId);
-    event LandTransferred(string indexed landId, address indexed from, address indexed to, uint256 price);
-    event LandListed(string indexed landId, uint256 price, address indexed seller, string metadataHash);
-    event ListingPriceUpdated(string indexed landId, uint256 oldPrice, uint256 newPrice);
-    event ListingCancelled(string indexed landId);
-    event LandSold(string indexed landId, address indexed buyer, address indexed seller, uint256 price);
+    event LandMinted(
+        address indexed initialOwner,
+        string indexed landId,
+        LandType lType,
+        uint256 tokenId
+    );
+
+    // Share-ledger events ----------------------------------------------------
+    event ShareholderAdded(string indexed landId, address indexed holder, uint16 shareBps);
+    event ShareholderRemoved(string indexed landId, address indexed holder);
+    event ShareTransferred(
+        string indexed landId,
+        address indexed from,
+        address indexed to,
+        uint16 shareBps,
+        uint256 price
+    );
+
+    // Marketplace ------------------------------------------------------------
+    event ShareListed(
+        string indexed landId,
+        address indexed seller,
+        uint16 shareBpsForSale,
+        uint256 price,
+        string metadataHash
+    );
+    event ListingPriceUpdated(
+        string indexed landId,
+        address indexed seller,
+        uint256 oldPrice,
+        uint256 newPrice
+    );
+    event ListingCancelled(string indexed landId, address indexed seller);
+    event ShareSold(
+        string indexed landId,
+        address indexed buyer,
+        address indexed seller,
+        uint16 shareBps,
+        uint256 price
+    );
+
+    // Pull-payment -----------------------------------------------------------
     event ProceedsCredited(address indexed seller, uint256 amount);
     event ProceedsWithdrawn(address indexed seller, uint256 amount);
-    event InheritanceInitiated(string indexed oldLandId, uint256 totalHeirs, uint256 proposalNonce);
-    event HeirApproved(string indexed oldLandId, address indexed heir, uint256 proposalNonce);
-    event InheritanceDisputed(string indexed oldLandId, address indexed heir, uint256 proposalNonce);
-    event InheritanceFinalized(string indexed oldLandId, uint256 proposalNonce);
-    event DisputeResolved(string indexed oldLandId, bool forceExecuted);
+
+    // Inheritance ------------------------------------------------------------
+    event InheritanceInitiated(
+        string indexed landId,
+        address indexed deceasedHolder,
+        uint256 totalHeirs,
+        uint16 deceasedShareBps,
+        uint256 proposalNonce
+    );
+    event HeirApproved(string indexed landId, address indexed heir, uint256 proposalNonce);
+    event InheritanceDisputed(string indexed landId, address indexed heir, uint256 proposalNonce);
+    event InheritanceFinalized(string indexed landId, uint256 proposalNonce);
+    event DisputeResolved(string indexed landId, bool forceExecuted);
+
+    // Other ------------------------------------------------------------------
     event LandStatusChanged(string indexed landId, LandStatus status);
     event EmergencyWithdrawal(address indexed to, uint256 amount);
 
@@ -305,9 +417,6 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         _;
     }
 
-    /// @dev Rejects empty strings AND strings exceeding MAX_STRING_LENGTH.
-    ///      Centralises the anti-griefing length check so we can't forget it
-    ///      on a new input.
     modifier boundedString(string calldata s) {
         uint256 len = bytes(s).length;
         if (len == 0 || len > MAX_STRING_LENGTH) revert LandRegistry__InvalidStringLength();
@@ -318,27 +427,11 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // 11. CONSTRUCTOR
     // ========================================================================
 
-    /**
-     * @param backend Address that receives `MINTER_ROLE`,
-     *                `INHERITANCE_ORACLE_ROLE`, and `DISPUTE_ARBITER_ROLE`
-     *                at deployment so v4 callers keep working unchanged.
-     *                The admin can later revoke any subset to split duties.
-     *
-     *                Deployer (`msg.sender`) becomes `DEFAULT_ADMIN_ROLE`
-     *                and `PAUSER_ROLE`. Both should be a multisig in
-     *                production — a single-key admin defeats role
-     *                separation.
-     */
     constructor(address backend) ERC721("PakLandRegistry", "PLR") {
         if (backend == address(0)) revert LandRegistry__ZeroAddress();
 
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(PAUSER_ROLE, msg.sender);
-
-        // Combined "backend" wallet initially holds all three oracle roles.
-        // SECURITY: split-key operators should `revokeRole` the ones they
-        //           don't need post-deploy so each off-chain service holds
-        //           only the narrowest authority required.
         _grantRole(MINTER_ROLE, backend);
         _grantRole(INHERITANCE_ORACLE_ROLE, backend);
         _grantRole(DISPUTE_ARBITER_ROLE, backend);
@@ -349,12 +442,9 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // ========================================================================
 
     // ------------------------------------------------------------------------
-    // 12.a Admin — pause / role / emergency
+    // 12.a Admin
     // ------------------------------------------------------------------------
 
-    /// @notice Pause every user-facing write. Reads remain open. Pending-
-    ///         proceeds withdrawals are intentionally NOT gated by pause —
-    ///         see `withdrawProceeds`.
     function pause() external onlyRole(PAUSER_ROLE) {
         _pause();
     }
@@ -363,9 +453,6 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         _unpause();
     }
 
-    /// @notice Grant or revoke the institutional `GOVT_AUTHORITY_ROLE`.
-    ///         `AccessControl` emits `RoleGranted` / `RoleRevoked` itself —
-    ///         no need for a custom event.
     function setGovtAuthority(address wallet, bool status) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (wallet == address(0)) revert LandRegistry__ZeroAddress();
         if (status) {
@@ -375,14 +462,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         }
     }
 
-    /**
-     * @notice Sweep STRAY ETH only (never user balances).
-     *
-     * @dev    SECURITY: `_totalPendingWithdrawals` is subtracted from the
-     *         contract balance so this function can never accidentally
-     *         drain a seller's pending proceeds — even an actively
-     *         malicious admin cannot use this to steal user funds.
-     */
+    /// @notice Sweep stray ETH only — never seller balances.
     function emergencyWithdraw(address payable to) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
         if (to == address(0)) revert LandRegistry__ZeroAddress();
         uint256 contractBalance = address(this).balance;
@@ -391,8 +471,6 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
             : 0;
         if (stray == 0) revert LandRegistry__NoStrayBalance();
 
-        // `Address.sendValue` reverts with a descriptive reason if `to`
-        // cannot accept the transfer (e.g., reverting receive()).
         to.sendValue(stray);
         emit EmergencyWithdrawal(to, stray);
     }
@@ -401,16 +479,6 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // 12.b Identity
     // ------------------------------------------------------------------------
 
-    /**
-     * @notice Bind the caller's wallet to a real-world identity.
-     *
-     * @dev    SECURITY:
-     *         - Both inputs are length-bounded via `boundedString` (anti-
-     *           griefing on storage).
-     *         - Two-way uniqueness check (wallet→profile and CNIC→wallet)
-     *           guarantees the contract can never enter a state where one
-     *           CNIC maps to two wallets.
-     */
     function registerUser(
         string calldata name,
         string calldata cnic
@@ -429,17 +497,14 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // ------------------------------------------------------------------------
 
     /**
-     * @notice Mint a fresh land NFT for a verified citizen or govt authority.
+     * @notice Mint a fresh land with a single initial owner holding 100%
+     *         (TOTAL_SHARES bps). Subsequent transfers and inheritance
+     *         redistribute that 100% among multiple holders without ever
+     *         minting another NFT for the same parcel.
      *
-     * @dev    SECURITY:
-     *         - `MINTER_ROLE` (split out of v4's `BACKEND_ROLE`) — least
-     *           privilege for the minting key.
-     *         - `nonReentrant` — `_safeMint` invokes `onERC721Received`
-     *           on contract recipients; a malicious recipient could attempt
-     *           to reenter and trigger another mint.
-     *         - String bounds on `landId` and `ipfsHash`.
-     *         - Owner validated as an authorized holder (registered or
-     *           govt-role) BEFORE state writes.
+     * @dev    The NFT is minted to `address(this)` (self-custody). The
+     *         initial owner's 100% bps is recorded in the share ledger
+     *         — that is the only meaningful ownership signal in v6.
      */
     function storeVerifiedLandRecord(
         address owner,
@@ -458,52 +523,56 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         if (!_isAuthorizedHolder(owner)) revert LandRegistry__NotAuthorizedHolder(owner);
         if (_landExists[landId]) revert LandRegistry__LandAlreadyExists(landId);
 
-        _mintLand(owner, landId, ipfsHash, lType);
+        _createLand(owner, landId, ipfsHash, lType);
     }
 
     // ------------------------------------------------------------------------
-    // 12.d Direct transfer (off-marketplace)
+    // 12.d Share transfer (replaces v5's transferLandOwnership)
     // ------------------------------------------------------------------------
 
     /**
-     * @notice Peer-to-peer transfer with an on-chain sale-price log.
+     * @notice Transfer `shareBps` basis points of `landId` from caller to
+     *         `recipient`. Caller must hold at least `shareBps`. A holder
+     *         transferring their entire share is automatically removed
+     *         from the shareholder list.
      *
      * @dev    SECURITY:
-     *         - `nonReentrant` — `_safeTransfer` invokes
-     *           `onERC721Received` on contract recipients.
-     *         - Effects applied BEFORE `_safeTransfer` (CEI). Combined
-     *           with `nonReentrant` this is double protection.
-     *         - The `_update` hook (see below) auto-clears any active
-     *           listing on this NFT — eliminates the "stale listing after
-     *           direct transfer" hole that existed in v3.
+     *         - `nonReentrant`: no external calls inside, but defensive in
+     *           case a future change introduces one.
+     *         - Pre-flight checks ensure the operation cannot half-apply
+     *           (caller has enough, recipient is authorised, recipient is
+     *           not the caller, recipient is non-zero).
+     *         - Share conservation invariant I1 holds by construction
+     *           (matched _decreaseShare + _increaseShare of equal amount).
      */
-    function transferLandOwnership(
+    function transferShare(
         string calldata landId,
-        address newOwner,
+        address recipient,
+        uint16 shareBps,
         uint256 salePrice
     ) external whenNotPaused nonReentrant landMustExist(landId) onlyActive(landId) {
-        if (newOwner == address(0)) revert LandRegistry__ZeroAddress();
-        if (newOwner == msg.sender) revert LandRegistry__SelfTransfer();
+        if (recipient == address(0)) revert LandRegistry__ZeroAddress();
+        if (recipient == msg.sender) revert LandRegistry__SelfTransfer();
+        if (shareBps == 0) revert LandRegistry__InvalidShare();
+        if (!_isAuthorizedHolder(recipient)) revert LandRegistry__NotAuthorizedHolder(recipient);
 
-        uint256 tokenId = getTokenIdFromLandId(landId);
-        if (ownerOf(tokenId) != msg.sender) revert LandRegistry__NotLandOwner(msg.sender, landId);
-        if (!_isAuthorizedHolder(newOwner)) revert LandRegistry__NotAuthorizedHolder(newOwner);
+        uint16 callerShare = _shareBps[landId][msg.sender];
+        if (callerShare < shareBps) revert LandRegistry__InsufficientShare(msg.sender, callerShare, shareBps);
 
-        // --- Effects (state writes BEFORE the interaction) ---
-        LandRecord storage record = _landRecords[landId];
-        record.currentOwner = newOwner;
-        record.cnic = _cnicFor(newOwner);
+        _decreaseShare(landId, msg.sender, shareBps);
+        _increaseShare(landId, recipient, shareBps);
 
-        _removeFromOwnerList(msg.sender, landId);
-        _addToOwnerList(newOwner, landId);
         _ownershipHistory[landId].push(
-            OwnershipHistory({owner: newOwner, timestamp: uint64(block.timestamp), price: salePrice})
+            OwnershipChange({
+                from: msg.sender,
+                to: recipient,
+                shareBps: shareBps,
+                timestamp: uint64(block.timestamp),
+                price: salePrice
+            })
         );
 
-        // --- Interaction ---
-        _safeTransfer(msg.sender, newOwner, tokenId, "");
-
-        emit LandTransferred(landId, msg.sender, newOwner, salePrice);
+        emit ShareTransferred(landId, msg.sender, recipient, shareBps, salePrice);
     }
 
     // ------------------------------------------------------------------------
@@ -511,15 +580,21 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // ------------------------------------------------------------------------
 
     /**
-     * @notice List a plot for sale. Resets the 7-day deadline.
+     * @notice List a basis-point portion of caller's share for sale.
+     *         Each (landId, seller) supports one active listing at a time;
+     *         re-listing overwrites the previous one and resets the 7-day
+     *         deadline.
      *
      * @dev    SECURITY:
-     *         - Length-bound the IPFS metadata CID.
-     *         - Zero-price rejection via `InvalidPrice`.
-     *         - Only the current NFT owner may list.
+     *         - Caller must currently hold at least `shareBpsForSale`. If
+     *           the caller's share later drops below this (e.g., they
+     *           transferred away after listing), `buyShare` will reject
+     *           the purchase via its own share check — no payment to a
+     *           seller who no longer owns the listed share.
      */
-    function listLandForSale(
+    function listShareForSale(
         string calldata landId,
+        uint16 shareBpsForSale,
         uint256 price,
         string calldata metadataHash
     )
@@ -529,12 +604,16 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         onlyActive(landId)
         boundedString(metadataHash)
     {
+        if (shareBpsForSale == 0) revert LandRegistry__InvalidShare();
         if (price == 0) revert LandRegistry__InvalidPrice();
 
-        uint256 tokenId = getTokenIdFromLandId(landId);
-        if (ownerOf(tokenId) != msg.sender) revert LandRegistry__NotLandOwner(msg.sender, landId);
+        uint16 callerShare = _shareBps[landId][msg.sender];
+        if (callerShare < shareBpsForSale) {
+            revert LandRegistry__InsufficientShare(msg.sender, callerShare, shareBpsForSale);
+        }
 
-        _landListings[landId] = Listing({
+        _listings[landId][msg.sender] = Listing({
+            shareBpsForSale: shareBpsForSale,
             price: price,
             seller: msg.sender,
             isActive: true,
@@ -542,121 +621,102 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
             metadataHash: metadataHash
         });
 
-        emit LandListed(landId, price, msg.sender, metadataHash);
+        emit ShareListed(landId, msg.sender, shareBpsForSale, price, metadataHash);
     }
 
     /**
-     * @notice Decrease an active listing's price WITHOUT resetting the
-     *         deadline. Raises are explicitly rejected.
-     *
-     * @dev    SECURITY (front-running mitigation):
-     *         Allowing a seller to RAISE the price in flight would let
-     *         them front-run a buyer's purchase tx — buyer signs at price
-     *         X, seller raises to X+ε, buyer's tx confirms at X+ε. We
-     *         eliminate that vector by allowing decrease only. (A seller
-     *         who wants to raise can `cancelListing` + `listLandForSale`,
-     *         which visibly resets the 7-day clock and gives buyers a
-     *         clear "the listing changed" signal.) Buyers further protect
-     *         themselves via `maxPrice` on `buyLand`.
+     * @notice Lower the price on an active listing without resetting the
+     *         deadline. Raises are rejected — see security comment in v5.
      */
     function updateListingPrice(string calldata landId, uint256 newPrice) external whenNotPaused {
         if (newPrice == 0) revert LandRegistry__InvalidPrice();
 
-        Listing storage listing = _landListings[landId];
-        if (!listing.isActive) revert LandRegistry__ListingNotActive(landId);
-        if (listing.seller != msg.sender) revert LandRegistry__NotLandOwner(msg.sender, landId);
-        if (newPrice >= listing.price) {
-            revert LandRegistry__PriceMustDecrease(listing.price, newPrice);
-        }
+        Listing storage listing = _listings[landId][msg.sender];
+        if (!listing.isActive) revert LandRegistry__ListingNotActive(landId, msg.sender);
+        if (newPrice >= listing.price) revert LandRegistry__PriceMustDecrease(listing.price, newPrice);
 
         uint256 oldPrice = listing.price;
         listing.price = newPrice;
-        emit ListingPriceUpdated(landId, oldPrice, newPrice);
+
+        emit ListingPriceUpdated(landId, msg.sender, oldPrice, newPrice);
+    }
+
+    /// @notice Withdraw caller's own listing for a land.
+    function cancelListing(string calldata landId) external whenNotPaused {
+        if (!_listings[landId][msg.sender].isActive) revert LandRegistry__ListingNotActive(landId, msg.sender);
+
+        delete _listings[landId][msg.sender];
+        emit ListingCancelled(landId, msg.sender);
     }
 
     /**
-     * @notice Purchase a listed plot.
+     * @notice Buy the share that `seller` has listed against `landId`.
      *
-     * @param  landId   Plot to buy.
-     * @param  maxPrice Maximum price the buyer is willing to pay. The tx
-     *                  reverts if the listing's current price exceeds this.
+     * @param  landId   Plot.
+     * @param  seller   Address whose listing the buyer is purchasing.
+     * @param  maxPrice Buyer's price ceiling (front-running protection).
      *
      * @dev    SECURITY:
-     *         - `maxPrice` parameter prevents seller-side front-running
-     *           (see `updateListingPrice` comment). Buyer signs with their
-     *           expected price; even if the listing somehow moved between
-     *           sign and confirm, the tx fails closed.
-     *         - `nonReentrant` + CEI: listing is `delete`d and all state
-     *           updated BEFORE any external interaction.
-     *         - Pull-payment for the seller: proceeds are credited to
-     *           `_pendingWithdrawals[seller]` (NOT pushed). Eliminates the
-     *           "malicious-receive()" griefing vector.
-     *         - Buyer overpay refund kept as push: the buyer signs the
-     *           tx and controls their own contract; if their `receive()`
-     *           reverts they are self-griefing.
-     *         - Buyer authorisation widened from "registered citizen only"
-     *           to "registered OR govt-authority" so institutional buyers
-     *           can purchase on the marketplace.
+     *         - `nonReentrant` + strict CEI: listing deleted and share
+     *           ledger updated BEFORE any external interaction.
+     *         - Pull-payment for seller proceeds (no push).
+     *         - Excess-payment refund to buyer (push — buyer controls
+     *           their own contract).
+     *         - Seller's current share is re-verified at purchase time
+     *           — stale listings (seller transferred away after listing)
+     *           cannot result in payment for shares that don't exist.
+     *         - `maxPrice` blocks seller-side front-running of price.
      */
-    function buyLand(
+    function buyShare(
         string calldata landId,
+        address seller,
         uint256 maxPrice
     ) external payable whenNotPaused nonReentrant landMustExist(landId) onlyActive(landId) {
         if (!_isAuthorizedHolder(msg.sender)) revert LandRegistry__NotAuthorizedHolder(msg.sender);
+        if (msg.sender == seller) revert LandRegistry__SellerCannotBuy();
 
-        Listing memory listing = _landListings[landId];
-        if (!listing.isActive) revert LandRegistry__ListingNotActive(landId);
-        if (block.timestamp > listing.deadline) revert LandRegistry__ListingExpired(landId);
-        if (msg.sender == listing.seller) revert LandRegistry__SellerCannotBuy();
+        Listing memory listing = _listings[landId][seller];
+        if (!listing.isActive) revert LandRegistry__ListingNotActive(landId, seller);
+        if (block.timestamp > listing.deadline) revert LandRegistry__ListingExpired(landId, seller);
 
         uint256 price = listing.price;
         if (price > maxPrice) revert LandRegistry__PriceExceedsMax(price, maxPrice);
         if (msg.value < price) revert LandRegistry__InsufficientPayment(msg.value, price);
 
-        uint256 tokenId = getTokenIdFromLandId(landId);
-        address seller = listing.seller;
+        uint16 shareBps = listing.shareBpsForSale;
+        uint16 sellerShare = _shareBps[landId][seller];
+        if (sellerShare < shareBps) revert LandRegistry__InsufficientShare(seller, sellerShare, shareBps);
 
         // --- Effects (CEI) ---
-        delete _landListings[landId];
+        delete _listings[landId][seller];
+        _decreaseShare(landId, seller, shareBps);
+        _increaseShare(landId, msg.sender, shareBps);
 
-        LandRecord storage record = _landRecords[landId];
-        record.currentOwner = msg.sender;
-        record.cnic = _cnicFor(msg.sender);
-
-        _removeFromOwnerList(seller, landId);
-        _addToOwnerList(msg.sender, landId);
-        _ownershipHistory[landId].push(
-            OwnershipHistory({owner: msg.sender, timestamp: uint64(block.timestamp), price: price})
-        );
-
-        // Pull-payment escrow credit (state-only — no external call).
         _pendingWithdrawals[seller] += price;
         _totalPendingWithdrawals += price;
         emit ProceedsCredited(seller, price);
 
-        // --- Interaction (NFT move — listing already cleared above) ---
-        _safeTransfer(seller, msg.sender, tokenId, "");
+        _ownershipHistory[landId].push(
+            OwnershipChange({
+                from: seller,
+                to: msg.sender,
+                shareBps: shareBps,
+                timestamp: uint64(block.timestamp),
+                price: price
+            })
+        );
 
-        // Buyer refund of any overpayment (push — buyer controls their own
-        // contract; self-griefing is their problem, not the seller's).
+        // --- Interactions ---
         uint256 excess = msg.value - price;
         if (excess > 0) {
             payable(msg.sender).sendValue(excess);
         }
 
-        emit LandSold(landId, msg.sender, seller, price);
+        emit ShareSold(landId, msg.sender, seller, shareBps, price);
     }
 
-    /// @notice Withdraw any sale proceeds credited to the caller.
-    ///
-    /// @dev SECURITY:
-    ///      - Intentionally NOT `whenNotPaused`. A pause halts new
-    ///        operations but must never trap user funds.
-    ///      - CEI: balance is zeroed BEFORE the external send.
-    ///      - `nonReentrant` is belt-and-suspenders — the balance is
-    ///        already zero by the time `sendValue` runs.
-    ///      - `Address.sendValue` reverts cleanly if the recipient cannot
-    ///        accept the transfer.
+    /// @notice Withdraw accumulated sale proceeds. Intentionally NOT
+    ///         `whenNotPaused` — pause must not trap user funds.
     function withdrawProceeds() external nonReentrant {
         uint256 amount = _pendingWithdrawals[msg.sender];
         if (amount == 0) revert LandRegistry__NoBalance();
@@ -668,155 +728,146 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         emit ProceedsWithdrawn(msg.sender, amount);
     }
 
-    /// @notice Cancel an active listing.
-    function cancelListing(string calldata landId) external whenNotPaused {
-        uint256 tokenId = getTokenIdFromLandId(landId);
-        if (ownerOf(tokenId) != msg.sender) revert LandRegistry__NotLandOwner(msg.sender, landId);
-        if (!_landListings[landId].isActive) revert LandRegistry__ListingNotActive(landId);
-
-        delete _landListings[landId];
-        emit ListingCancelled(landId);
-    }
-
     // ------------------------------------------------------------------------
-    // 12.f Inheritance
+    // 12.f Inheritance — redistributes shares, never mints new lands
     // ------------------------------------------------------------------------
 
     /**
-     * @notice Open a succession proposal. Plot locks into
-     *         `PENDING_INHERITANCE` until 100% approval (auto-execute) or
-     *         any heir disputes (→ `LOCKED_DISPUTE` for arbiter resolution).
+     * @notice Open a succession proposal that REDISTRIBUTES the deceased
+     *         holder's shares across heirs. The land NFT does not move,
+     *         the tokenId does not change, and the other shareholders'
+     *         positions are unaffected.
      *
-     * @dev    SECURITY:
-     *         - `INHERITANCE_ORACLE_ROLE` (split out of v4's BACKEND_ROLE).
-     *         - ALL inputs pre-validated here so the final voter can never
-     *           DoS the proposal at execution time:
-     *             • parallel arrays equal length, non-empty, ≤ MAX_HEIRS
-     *             • no zero-address heirs
-     *             • no duplicate heirs (would deadlock the 100%-quorum
-     *               counter)
-     *             • no heir equal to the current owner (sanity guard
-     *               against self-inheritance — the deceased shouldn't be
-     *               their own heir)
-     *             • no duplicate new-landIds within the batch
-     *             • no collisions with existing land
-     *             • no empty IPFS hashes
-     *             • each heir authorised to hold land
-     *             • each new-landId and new-ipfsHash length-bounded
-     *         - `proposalNonce` bumped — fresh per-heir vote/membership state.
+     * @dev    WHY THIS DESIGN
+     *         --------------------------------------------------------
+     *         v5's inheritance burned the original NFT and minted a fresh
+     *         NFT per heir — modelling inheritance as forced subdivision.
+     *         That misrepresents Pakistani succession law and most
+     *         developer-society practice, which produces CO-OWNERS, not
+     *         new plots. v6 reflects reality:
+     *
+     *           • The plot's identity (tokenId, landId, IPFS metadata)
+     *             persists across inheritance — provenance trackers,
+     *             liens, and indexers all keep working.
+     *           • Heirs join the existing shareholder set; non-affected
+     *             co-owners are completely untouched.
+     *           • If heirs later want to physically subdivide, that is a
+     *             separate, deliberate action — not a side-effect of death.
+     *
+     *         INPUT VALIDATION (DoS prevention)
+     *         --------------------------------------------------------
+     *         All inputs are pre-checked here so the final approving heir
+     *         can never DoS the proposal at execution time:
+     *           • deceasedHolder must currently own some share on landId
+     *           • heirs[].length == heirShares[].length, 0 < length ≤ MAX_HEIRS
+     *           • no heir is the deceased; no duplicate heirs; no zero
+     *             addresses; no zero-bps heirShares
+     *           • Σ heirShares == _shareBps[landId][deceasedHolder]
+     *             (preserves invariant I1: total stays at 10,000)
+     *           • every heir is an authorized holder
+     *           • post-execution shareholder count would not exceed
+     *             MAX_SHAREHOLDERS (prevents enumeration griefing)
+     *
+     *         The `proposalNonce` bumps on every call so a re-issued
+     *         proposal (after a dispute reset) gets fresh per-heir vote
+     *         and membership state.
      */
     function initiateInheritance(
-        string calldata oldLandId,
+        string calldata landId,
+        address deceasedHolder,
         address[] calldata heirs,
-        string[] calldata newLandIds,
-        string[] calldata newIpfsHashes
+        uint16[] calldata heirShares
     )
         external
         onlyRole(INHERITANCE_ORACLE_ROLE)
         whenNotPaused
-        landMustExist(oldLandId)
-        onlyActive(oldLandId)
+        landMustExist(landId)
+        onlyActive(landId)
     {
-        _validateInheritanceInputs(oldLandId, heirs, newLandIds, newIpfsHashes);
+        _validateInheritanceInputs(landId, deceasedHolder, heirs, heirShares);
 
-        InheritanceRequest storage req = _inheritanceRequests[oldLandId];
+        InheritanceRequest storage req = _inheritanceRequests[landId];
         uint256 nonce = req.proposalNonce + 1;
 
+        req.deceasedHolder = deceasedHolder;
         req.heirs = heirs;
-        req.newLandIds = newLandIds;
-        req.newIpfsHashes = newIpfsHashes;
+        req.heirShares = heirShares;
         req.approvalCount = 0;
         req.isExecuted = false;
         req.proposalNonce = nonce;
 
         uint256 n = heirs.length;
         for (uint256 i = 0; i < n; ) {
-            _isHeirFor[oldLandId][nonce][heirs[i]] = true;
+            _isHeirFor[landId][nonce][heirs[i]] = true;
             unchecked {
                 ++i;
             }
         }
 
-        _landRecords[oldLandId].status = LandStatus.PENDING_INHERITANCE;
+        _landRecords[landId].status = LandStatus.PENDING_INHERITANCE;
 
-        emit InheritanceInitiated(oldLandId, n, nonce);
-        emit LandStatusChanged(oldLandId, LandStatus.PENDING_INHERITANCE);
+        emit InheritanceInitiated(
+            landId,
+            deceasedHolder,
+            n,
+            _shareBps[landId][deceasedHolder],
+            nonce
+        );
+        emit LandStatusChanged(landId, LandStatus.PENDING_INHERITANCE);
     }
 
-    /**
-     * @notice Cast a yes-vote on the open proposal.
-     *
-     * @dev    SECURITY:
-     *         - `nonReentrant` — auto-execute may fire `_safeMint` which
-     *           invokes `onERC721Received` on contract heirs.
-     *         - O(1) heir-membership lookup via `_isHeirFor` — replaces
-     *           v3's linear `heirs[]` scan.
-     */
-    function approveSuccessionPlan(string calldata oldLandId) external whenNotPaused nonReentrant {
-        InheritanceRequest storage req = _inheritanceRequests[oldLandId];
-        if (_landRecords[oldLandId].status != LandStatus.PENDING_INHERITANCE) {
-            revert LandRegistry__NoPendingPlan(oldLandId);
+    /// @notice Heir approves the open proposal. Auto-executes at 100% quorum.
+    function approveSuccessionPlan(string calldata landId) external whenNotPaused nonReentrant {
+        InheritanceRequest storage req = _inheritanceRequests[landId];
+        if (_landRecords[landId].status != LandStatus.PENDING_INHERITANCE) {
+            revert LandRegistry__NoPendingPlan(landId);
         }
-        if (req.isExecuted) revert LandRegistry__PlanAlreadyExecuted(oldLandId);
+        if (req.isExecuted) revert LandRegistry__PlanAlreadyExecuted(landId);
 
         uint256 nonce = req.proposalNonce;
-        if (!_isHeirFor[oldLandId][nonce][msg.sender]) revert LandRegistry__NotAnHeir(msg.sender);
-        if (_heirApproved[oldLandId][nonce][msg.sender]) revert LandRegistry__AlreadyVoted();
+        if (!_isHeirFor[landId][nonce][msg.sender]) revert LandRegistry__NotAnHeir(msg.sender);
+        if (_heirApproved[landId][nonce][msg.sender]) revert LandRegistry__AlreadyVoted();
 
-        _heirApproved[oldLandId][nonce][msg.sender] = true;
+        _heirApproved[landId][nonce][msg.sender] = true;
         uint256 newCount = req.approvalCount + 1;
         req.approvalCount = newCount;
 
-        emit HeirApproved(oldLandId, msg.sender, nonce);
+        emit HeirApproved(landId, msg.sender, nonce);
 
         if (newCount == req.heirs.length) {
-            _executeInheritance(oldLandId);
+            _executeInheritance(landId);
         }
     }
 
-    /**
-     * @notice Dispute — single heir's veto, permanent until arbiter resolves.
-     *
-     * @dev    SECURITY:
-     *         - Re-checks `proposalNonce`-scoped membership.
-     *         - Idempotent at the state level: a second dispute on an
-     *           already-LOCKED_DISPUTE plot reverts via the status check.
-     */
-    function disputeSuccessionPlan(string calldata oldLandId) external whenNotPaused {
-        InheritanceRequest storage req = _inheritanceRequests[oldLandId];
-        if (_landRecords[oldLandId].status != LandStatus.PENDING_INHERITANCE) {
-            revert LandRegistry__NoPendingPlan(oldLandId);
+    /// @notice Single-heir veto. Permanent lock until arbiter resolves.
+    function disputeSuccessionPlan(string calldata landId) external whenNotPaused {
+        InheritanceRequest storage req = _inheritanceRequests[landId];
+        if (_landRecords[landId].status != LandStatus.PENDING_INHERITANCE) {
+            revert LandRegistry__NoPendingPlan(landId);
         }
-        if (!_isHeirFor[oldLandId][req.proposalNonce][msg.sender]) revert LandRegistry__NotAnHeir(msg.sender);
+        if (!_isHeirFor[landId][req.proposalNonce][msg.sender]) revert LandRegistry__NotAnHeir(msg.sender);
 
-        _landRecords[oldLandId].status = LandStatus.LOCKED_DISPUTE;
-        emit InheritanceDisputed(oldLandId, msg.sender, req.proposalNonce);
-        emit LandStatusChanged(oldLandId, LandStatus.LOCKED_DISPUTE);
+        _landRecords[landId].status = LandStatus.LOCKED_DISPUTE;
+        emit InheritanceDisputed(landId, msg.sender, req.proposalNonce);
+        emit LandStatusChanged(landId, LandStatus.LOCKED_DISPUTE);
     }
 
-    /**
-     * @notice Arbiter escape hatch — force-execute or reset to ACTIVE.
-     *
-     * @dev    SECURITY:
-     *         - `DISPUTE_ARBITER_ROLE` only — separate key from the minter
-     *           and the inheritance oracle.
-     *         - `nonReentrant` — `_executeInheritance` mints to heirs.
-     */
+    /// @notice Arbiter escape hatch.
     function resolveDispute(
-        string calldata oldLandId,
+        string calldata landId,
         bool forceExecute
     ) external onlyRole(DISPUTE_ARBITER_ROLE) whenNotPaused nonReentrant {
-        if (_landRecords[oldLandId].status != LandStatus.LOCKED_DISPUTE) {
-            revert LandRegistry__LandNotDisputed(oldLandId);
+        if (_landRecords[landId].status != LandStatus.LOCKED_DISPUTE) {
+            revert LandRegistry__LandNotDisputed(landId);
         }
 
         if (forceExecute) {
-            _executeInheritance(oldLandId);
+            _executeInheritance(landId);
         } else {
-            _landRecords[oldLandId].status = LandStatus.ACTIVE;
-            emit LandStatusChanged(oldLandId, LandStatus.ACTIVE);
+            _landRecords[landId].status = LandStatus.ACTIVE;
+            emit LandStatusChanged(landId, LandStatus.ACTIVE);
         }
-        emit DisputeResolved(oldLandId, forceExecute);
+        emit DisputeResolved(landId, forceExecute);
     }
 
     // ========================================================================
@@ -824,14 +875,11 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // ========================================================================
 
     /**
-     * @dev OZ-5 transfer hook. Runs on every NFT movement.
-     *
-     *      SECURITY: auto-clears any active marketplace listing the moment
-     *      the underlying NFT moves. v3 did not do this — a seller could
-     *      list, then transfer the NFT to a third party, leaving an active
-     *      listing pointing at the wrong seller. An unsuspecting buyer
-     *      could send ETH to the ORIGINAL seller while the NEW owner lost
-     *      the NFT. Fixed atomically here.
+     * @dev OZ-5 transfer hook. The land NFTs in this contract are
+     *      self-custodial — they are minted to `address(this)` and must
+     *      never leave it (meaningful ownership lives in the share ledger).
+     *      This override allows the initial mint (`from == address(0)`)
+     *      and rejects every other transition.
      */
     function _update(
         address to,
@@ -839,62 +887,55 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         address auth
     ) internal override returns (address) {
         address from = super._update(to, tokenId, auth);
-        if (from != address(0)) {
-            string memory landId = _tokenIdToLandId[tokenId];
-            if (bytes(landId).length != 0 && _landListings[landId].isActive) {
-                delete _landListings[landId];
-                emit ListingCancelled(landId);
-            }
+        if (from != address(0) && to != address(this)) {
+            revert LandRegistry__NftNonTransferable();
         }
         return from;
     }
 
-    /// @dev Execute the standing inheritance plan: burn old, archive, mint heirs.
-    ///
-    ///      SECURITY:
-    ///      - Sets `isExecuted = true` FIRST so any reentrant attempt to
-    ///        re-execute fails the `!isExecuted` precondition.
-    ///      - Cleans the deceased's `_ownerToLands` index (v3 leaked here).
-    ///      - Marks old land as terminal `INHERITED` so it stays in history
-    ///        but cannot be confused with active land.
-    function _executeInheritance(string calldata oldLandId) private {
-        InheritanceRequest storage req = _inheritanceRequests[oldLandId];
+    /// @dev Execute the standing inheritance plan: decrement the deceased's
+    ///      share to zero, distribute it across heirs. The land NFT and its
+    ///      tokenId persist unchanged.
+    function _executeInheritance(string calldata landId) private {
+        InheritanceRequest storage req = _inheritanceRequests[landId];
         req.isExecuted = true;
 
-        LandRecord storage oldRecord = _landRecords[oldLandId];
-        LandType lType = oldRecord.landType;
-        address oldOwner = oldRecord.currentOwner;
+        address deceased = req.deceasedHolder;
+        uint16 deceasedShare = _shareBps[landId][deceased];
 
-        uint256 oldTokenId = getTokenIdFromLandId(oldLandId);
-        _burn(oldTokenId);
-        delete _tokenIdToLandId[oldTokenId];
+        // 1. Remove deceased's full share.
+        _decreaseShare(landId, deceased, deceasedShare);
 
-        _removeFromOwnerList(oldOwner, oldLandId);
-
-        oldRecord.currentOwner = address(0);
-        oldRecord.status = LandStatus.INHERITED;
-
+        // 2. Distribute to heirs.
         uint256 n = req.heirs.length;
         for (uint256 i = 0; i < n; ) {
-            _mintLand(req.heirs[i], req.newLandIds[i], req.newIpfsHashes[i], lType);
+            address heir = req.heirs[i];
+            uint16 share = req.heirShares[i];
+            _increaseShare(landId, heir, share);
+            _ownershipHistory[landId].push(
+                OwnershipChange({
+                    from: deceased,
+                    to: heir,
+                    shareBps: share,
+                    timestamp: uint64(block.timestamp),
+                    price: 0
+                })
+            );
             unchecked {
                 ++i;
             }
         }
 
-        emit InheritanceFinalized(oldLandId, req.proposalNonce);
-        emit LandStatusChanged(oldLandId, LandStatus.INHERITED);
+        // 3. Return land to ACTIVE — it never had to leave existence.
+        _landRecords[landId].status = LandStatus.ACTIVE;
+
+        emit InheritanceFinalized(landId, req.proposalNonce);
+        emit LandStatusChanged(landId, LandStatus.ACTIVE);
     }
 
-    /// @dev Shared mint path. Used by `storeVerifiedLandRecord` and
-    ///      `_executeInheritance` so every new NFT takes the same code
-    ///      path through indexing, history seeding, and issuance.
-    function _mintLand(address owner, string memory landId, string memory ipfsHash, LandType lType) private {
-        if (_landExists[landId]) revert LandRegistry__LandAlreadyExists(landId);
-
+    /// @dev Mint a new land at initial 100% ownership for `owner`.
+    function _createLand(address owner, string calldata landId, string calldata ipfsHash, LandType lType) private {
         _landRecords[landId] = LandRecord({
-            currentOwner: owner,
-            cnic: _cnicFor(owner),
             landId: landId,
             ipfsHash: ipfsHash,
             landType: lType,
@@ -903,68 +944,91 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         });
         _landExists[landId] = true;
         _allLandIds.push(landId);
-        _addToOwnerList(owner, landId);
-        _ownershipHistory[landId].push(
-            OwnershipHistory({owner: owner, timestamp: uint64(block.timestamp), price: 0})
-        );
 
         uint256 tokenId = getTokenIdFromLandId(landId);
         _tokenIdToLandId[tokenId] = landId;
-        _safeMint(owner, tokenId);
+
+        // The NFT lives in this contract (self-custody — see _update override).
+        _mint(address(this), tokenId);
+
+        // Initial owner gets 100% of shares.
+        _increaseShare(landId, owner, TOTAL_SHARES);
+
+        _ownershipHistory[landId].push(
+            OwnershipChange({
+                from: address(0),
+                to: owner,
+                shareBps: TOTAL_SHARES,
+                timestamp: uint64(block.timestamp),
+                price: 0
+            })
+        );
 
         emit LandMinted(owner, landId, lType, tokenId);
     }
 
     /**
-     * @dev Pre-flight validation for `initiateInheritance`. O(n²) duplicate
-     *      detection is fine because `n <= MAX_HEIRS == 50` (max 2,500
-     *      iterations).
+     * @dev Increase `holder`'s basis-point share of `landId` by `deltaBps`,
+     *      maintaining the shareholder list + index mappings. If `holder`
+     *      had zero share, they are appended to the shareholder list and
+     *      their reverse-index entry created (preserving invariants I2-I5).
      *
-     *      SECURITY: every check here exists because its absence allowed a
-     *      real failure mode in v3 — see the inline notes.
+     *      Caller is responsible for the matching `_decreaseShare` from
+     *      another holder so that the total share invariant I1 is preserved.
      */
-    function _validateInheritanceInputs(
-        string calldata oldLandId,
-        address[] calldata heirs,
-        string[] calldata newLandIds,
-        string[] calldata newIpfsHashes
-    ) private view {
-        uint256 n = heirs.length;
-        if (n == 0) revert LandRegistry__NoHeirs();
-        if (n > MAX_HEIRS) revert LandRegistry__TooManyHeirs(n, MAX_HEIRS);
-        if (newLandIds.length != n || newIpfsHashes.length != n) revert LandRegistry__InheritanceArrayMismatch();
+    function _increaseShare(string memory landId, address holder, uint16 deltaBps) private {
+        uint16 currentBps = _shareBps[landId][holder];
+        uint16 newBps = currentBps + deltaBps;
+        _shareBps[landId][holder] = newBps;
 
-        address currentOwner = _landRecords[oldLandId].currentOwner;
+        if (currentBps == 0) {
+            // Cap shareholder enumeration to prevent griefing.
+            uint256 count = _shareholders[landId].length;
+            if (count >= MAX_SHAREHOLDERS) revert LandRegistry__TooManyShareholders(count, MAX_SHAREHOLDERS);
 
-        for (uint256 i = 0; i < n; ) {
-            address heir = heirs[i];
-
-            // v3 didn't validate any of these — a malformed payload would
-            // pass `initiate`, lock the asset, then fail the final vote.
-            if (heir == address(0)) revert LandRegistry__ZeroAddress();
-            if (heir == currentOwner) revert LandRegistry__HeirIsCurrentOwner(heir);
-            if (!_isAuthorizedHolder(heir)) revert LandRegistry__NotAuthorizedHolder(heir);
-
-            uint256 idLen = bytes(newLandIds[i]).length;
-            uint256 hashLen = bytes(newIpfsHashes[i]).length;
-            if (idLen == 0 || idLen > MAX_STRING_LENGTH || hashLen == 0 || hashLen > MAX_STRING_LENGTH) {
-                revert LandRegistry__InvalidStringLength();
-            }
-            if (_landExists[newLandIds[i]]) revert LandRegistry__LandAlreadyExists(newLandIds[i]);
-
-            for (uint256 j = i + 1; j < n; ) {
-                if (heirs[j] == heir) revert LandRegistry__DuplicateHeir(heir);
-                if (keccak256(bytes(newLandIds[j])) == keccak256(bytes(newLandIds[i]))) {
-                    revert LandRegistry__DuplicateNewLandId(newLandIds[i]);
-                }
-                unchecked {
-                    ++j;
-                }
-            }
-            unchecked {
-                ++i;
-            }
+            _shareholderIndex[landId][holder] = count;
+            _shareholders[landId].push(holder);
+            _addToOwnerList(holder, landId);
+            emit ShareholderAdded(landId, holder, deltaBps);
         }
+    }
+
+    /**
+     * @dev Decrease `holder`'s basis-point share by `deltaBps`. If their
+     *      remaining share drops to zero, they are removed from the
+     *      shareholder list (swap-and-pop) and from the reverse owner
+     *      index.
+     */
+    function _decreaseShare(string memory landId, address holder, uint16 deltaBps) private {
+        uint16 currentBps = _shareBps[landId][holder];
+        if (currentBps < deltaBps) revert LandRegistry__InsufficientShare(holder, currentBps, deltaBps);
+
+        uint16 newBps;
+        unchecked {
+            newBps = currentBps - deltaBps;
+        }
+        _shareBps[landId][holder] = newBps;
+
+        if (newBps == 0) {
+            _removeShareholder(landId, holder);
+            _removeFromOwnerList(holder, landId);
+            emit ShareholderRemoved(landId, holder);
+        }
+    }
+
+    /// @dev O(1) swap-and-pop removal from the per-land shareholder list.
+    function _removeShareholder(string memory landId, address holder) private {
+        address[] storage list = _shareholders[landId];
+        uint256 idx = _shareholderIndex[landId][holder];
+        uint256 lastIdx = list.length - 1;
+
+        if (idx != lastIdx) {
+            address lastHolder = list[lastIdx];
+            list[idx] = lastHolder;
+            _shareholderIndex[landId][lastHolder] = idx;
+        }
+        list.pop();
+        delete _shareholderIndex[landId][holder];
     }
 
     function _addToOwnerList(address owner, string memory landId) private {
@@ -972,9 +1036,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         _ownerLandIndex[owner][landId] = _ownerToLands[owner].length - 1;
     }
 
-    /// @dev Defensive O(1) swap-and-pop. The hash-cross-check prevents
-    ///      misuse where `landId` isn't actually in `owner`'s list (would
-    ///      otherwise corrupt index 0).
+    /// @dev Defensive O(1) swap-and-pop removal from the reverse owner index.
     function _removeFromOwnerList(address owner, string memory landId) private {
         uint256 len = _ownerToLands[owner].length;
         if (len == 0) return;
@@ -991,18 +1053,72 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         delete _ownerLandIndex[owner][landId];
     }
 
-    function _isAuthorizedHolder(address account) private view returns (bool) {
-        return _users[account].isRegistered || hasRole(GOVT_AUTHORITY_ROLE, account);
+    /// @dev Pre-flight validation for `initiateInheritance`. O(n²) duplicate
+    ///      check is fine because n ≤ MAX_HEIRS (50).
+    function _validateInheritanceInputs(
+        string calldata landId,
+        address deceasedHolder,
+        address[] calldata heirs,
+        uint16[] calldata heirShares
+    ) private view {
+        if (deceasedHolder == address(0)) revert LandRegistry__ZeroAddress();
+        uint16 deceasedShare = _shareBps[landId][deceasedHolder];
+        if (deceasedShare == 0) revert LandRegistry__DeceasedHasNoShares(deceasedHolder, landId);
+
+        uint256 n = heirs.length;
+        if (n == 0) revert LandRegistry__NoHeirs();
+        if (n > MAX_HEIRS) revert LandRegistry__TooManyHeirs(n, MAX_HEIRS);
+        if (heirShares.length != n) revert LandRegistry__InheritanceArrayMismatch();
+
+        // Bound the resulting shareholder count. Each heir who isn't already
+        // a shareholder adds one entry; the deceased's removal subtracts one.
+        // Worst case is all heirs new — count grows by (n - 1).
+        uint256 currentHolders = _shareholders[landId].length;
+        // Defensive upper-bound check (the actual delta may be smaller if some
+        // heirs are existing shareholders).
+        if (currentHolders + n > MAX_SHAREHOLDERS + 1) {
+            revert LandRegistry__TooManyShareholders(currentHolders + n - 1, MAX_SHAREHOLDERS);
+        }
+
+        uint256 sumOfShares = 0;
+        for (uint256 i = 0; i < n; ) {
+            address heir = heirs[i];
+            uint16 share = heirShares[i];
+
+            if (heir == address(0)) revert LandRegistry__ZeroAddress();
+            if (heir == deceasedHolder) revert LandRegistry__HeirIsDeceased(heir);
+            if (share == 0) revert LandRegistry__InvalidShare();
+            if (!_isAuthorizedHolder(heir)) revert LandRegistry__NotAuthorizedHolder(heir);
+
+            for (uint256 j = i + 1; j < n; ) {
+                if (heirs[j] == heir) revert LandRegistry__DuplicateHeir(heir);
+                unchecked {
+                    ++j;
+                }
+            }
+
+            sumOfShares += share;
+            unchecked {
+                ++i;
+            }
+        }
+
+        // Total share invariant: heir shares MUST sum to exactly the
+        // deceased's current share. Anything else would break invariant I1.
+        if (sumOfShares != uint256(deceasedShare)) {
+            revert LandRegistry__ShareTotalMismatch(uint16(sumOfShares), deceasedShare);
+        }
     }
 
-    function _cnicFor(address account) private view returns (string memory) {
-        return _users[account].isRegistered ? _users[account].cnic : "GOVT";
+    function _isAuthorizedHolder(address account) private view returns (bool) {
+        return _users[account].isRegistered || hasRole(GOVT_AUTHORITY_ROLE, account);
     }
 
     // ========================================================================
     // 14. VIEW / PURE FUNCTIONS
     // ========================================================================
 
+    /// @notice Deterministic tokenId — pure, free to call off-chain.
     function getTokenIdFromLandId(string memory landId) public pure returns (uint256) {
         return uint256(keccak256(abi.encodePacked(landId)));
     }
@@ -1022,34 +1138,82 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         return _users[account];
     }
 
-    function getListing(string calldata landId) external view returns (Listing memory) {
-        return _landListings[landId];
+    /// @notice All current shareholders for `landId`. Order is not stable
+    ///         across transfers (swap-and-pop removal may reorder).
+    function getShareholders(string calldata landId) external view returns (address[] memory) {
+        return _shareholders[landId];
     }
 
-    function getOwnershipHistory(string calldata landId) external view returns (OwnershipHistory[] memory) {
+    /// @notice Combined view: shareholders and their basis-point shares,
+    ///         in matching order. Convenient for frontend rendering.
+    function getShareholdersWithBps(
+        string calldata landId
+    ) external view returns (address[] memory holders, uint16[] memory shares) {
+        holders = _shareholders[landId];
+        uint256 n = holders.length;
+        shares = new uint16[](n);
+        for (uint256 i = 0; i < n; ) {
+            shares[i] = _shareBps[landId][holders[i]];
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    /// @notice O(1) share lookup for a single holder.
+    function getShareBps(string calldata landId, address holder) external view returns (uint16) {
+        return _shareBps[landId][holder];
+    }
+
+    /// @notice Computed sum of all shareholders' bps. For active lands
+    ///         this should always equal TOTAL_SHARES (10,000) — exposed
+    ///         as a sanity check / invariant assertion target.
+    function getTotalShares(string calldata landId) external view returns (uint16 total) {
+        address[] memory holders = _shareholders[landId];
+        uint256 n = holders.length;
+        for (uint256 i = 0; i < n; ) {
+            total += _shareBps[landId][holders[i]];
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function getListing(string calldata landId, address seller) external view returns (Listing memory) {
+        return _listings[landId][seller];
+    }
+
+    function getOwnershipHistory(string calldata landId) external view returns (OwnershipChange[] memory) {
         return _ownershipHistory[landId];
     }
 
     function getInheritanceRequest(
-        string calldata oldLandId
+        string calldata landId
     )
         external
         view
         returns (
+            address deceasedHolder,
             address[] memory heirs,
-            string[] memory newLandIds,
-            string[] memory newIpfsHashes,
+            uint16[] memory heirShares,
             uint256 approvalCount,
             bool isExecuted,
             uint256 proposalNonce
         )
     {
-        InheritanceRequest storage req = _inheritanceRequests[oldLandId];
-        return (req.heirs, req.newLandIds, req.newIpfsHashes, req.approvalCount, req.isExecuted, req.proposalNonce);
+        InheritanceRequest storage req = _inheritanceRequests[landId];
+        return (
+            req.deceasedHolder,
+            req.heirs,
+            req.heirShares,
+            req.approvalCount,
+            req.isExecuted,
+            req.proposalNonce
+        );
     }
 
-    function hasHeirApproved(string calldata oldLandId, address heir) external view returns (bool) {
-        return _heirApproved[oldLandId][_inheritanceRequests[oldLandId].proposalNonce][heir];
+    function hasHeirApproved(string calldata landId, address heir) external view returns (bool) {
+        return _heirApproved[landId][_inheritanceRequests[landId].proposalNonce][heir];
     }
 
     function isGovtAuthority(address account) external view returns (bool) {
@@ -1072,14 +1236,10 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         return _allLandIds.length;
     }
 
-    /// @notice Pending pull-payment balance for a seller.
     function pendingProceeds(address account) external view returns (uint256) {
         return _pendingWithdrawals[account];
     }
 
-    /// @notice Total ETH credited but not yet withdrawn. Public for
-    ///         transparency — anyone can verify the contract holds enough
-    ///         to honour all outstanding withdrawals.
     function totalPendingWithdrawals() external view returns (uint256) {
         return _totalPendingWithdrawals;
     }
