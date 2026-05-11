@@ -433,6 +433,14 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     }
 
     /// @notice Per (landId, seller) marketplace listing.
+    ///
+    /// @dev    A listing is an OFFER to sell `shareBpsForSale` of caller's
+    ///         current bps for `price`. It does NOT escrow shares — the
+    ///         seller's bps stays in the share ledger until `buyShare`
+    ///         settles. `buyShare` re-verifies the seller's share at
+    ///         purchase time so a stale listing (seller transferred away
+    ///         after listing) cannot result in payment for shares the
+    ///         seller no longer holds.
     struct Listing {
         uint16 shareBpsForSale;
         uint256 price;
@@ -440,6 +448,21 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         bool isActive;
         uint64 deadline;
         string metadataHash;
+    }
+
+    /// @notice Marketplace-only history row. Appended once per settled
+    ///         `buyShare`. Distinct from `_ownershipHistory`, which logs
+    ///         every shareholder change (mints, inheritance, gifts,
+    ///         subdivision-seed) — `_marketplaceHistory` is filtered down
+    ///         to MARKET-PRICED trades only, which makes secondary-market
+    ///         analytics (volume, average price per bps, time-on-market)
+    ///         a one-call read.
+    struct MarketplaceTrade {
+        address seller;
+        address buyer;
+        uint16 shareBps;
+        uint256 price;
+        uint64 timestamp;
     }
 
     /// @notice One row per shareholder change. The full audit log.
@@ -639,6 +662,13 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
 
     // --- Marketplace --------------------------------------------------------
     mapping(string => mapping(address => Listing)) private _listings;
+
+    /// @dev Per-land filtered log of MARKET trades only (price > 0,
+    ///      settled via `buyShare`). Indexed because dashboards routinely
+    ///      need "show me marketplace activity for this parcel" without
+    ///      walking the full ownership-history (which includes mints,
+    ///      inheritance redistributions, etc.).
+    mapping(string => MarketplaceTrade[]) private _marketplaceHistory;
 
     // --- Land import phase (v7) ---------------------------------------------
     mapping(string => ImportProposal) private _importProposals;
@@ -1212,7 +1242,60 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     }
 
     // ------------------------------------------------------------------------
-    // 12.e Marketplace (per-share, per-seller)
+    // 12.e Marketplace — fractional-ownership trading (LAYER-2 ONLY)
+    //
+    // ╔══════════════════════════════════════════════════════════════════╗
+    // ║ WHY SHARE TRADING DIFFERS FROM NFT TRANSFER                        ║
+    // ╚══════════════════════════════════════════════════════════════════╝
+    //
+    // The marketplace trades OWNERSHIP SHARES, not the land NFT itself.
+    // Every operation here is layer-2: the `_shareBps[landId][holder]`
+    // ledger updates, but the ERC-721 NFT does NOT move, the tokenId
+    // does NOT change, the IPFS metadata does NOT change. Practical
+    // consequences:
+    //
+    //   • A "30% sale" really is 3,000 bps changing hands inside the
+    //     ledger. No new NFT is minted, no tokenId is reassigned.
+    //   • A land with multiple co-owners can have MULTIPLE concurrent
+    //     listings — one per (landId, seller). The buyer chooses WHICH
+    //     seller's share to acquire via `buyShare(landId, seller, ..)`.
+    //   • `ownerOf(tokenId)` always returns `address(this)` (self-custody)
+    //     and never changes through marketplace activity. Integrators
+    //     looking for "who owns this parcel" must read the share ledger,
+    //     not ERC-721.
+    //   • A stale listing (seller transferred their share elsewhere
+    //     between listing and a buyer's call) cannot result in fraud —
+    //     `buyShare` re-verifies the seller's current `_shareBps` and
+    //     reverts if insufficient.
+    //
+    // ╔══════════════════════════════════════════════════════════════════╗
+    // ║ WHY PULL PAYMENTS IMPROVE SECURITY                                 ║
+    // ╚══════════════════════════════════════════════════════════════════╝
+    //
+    // A naïve `buyShare` would PUSH ETH to the seller inline:
+    //   (bool ok,) = seller.call{value: price}("");
+    //   require(ok);
+    // If `seller` is a contract whose `receive()` reverts (deliberately
+    // or because it ran out of gas), the entire `buyShare` reverts and
+    // the buyer cannot complete the purchase — a one-line griefing
+    // attack on any buyer of any listing.
+    //
+    // v6 onwards uses the canonical OZ pull-payment pattern instead:
+    //   1. `buyShare` credits the seller's pending-withdrawal balance
+    //      (a pure SSTORE — no external call to a third party).
+    //   2. The seller pulls funds on their own schedule via
+    //      `withdrawProceeds()`, which is `nonReentrant` and zeroes the
+    //      balance BEFORE sending (CEI), so even a reentrant receiver
+    //      can't double-spend.
+    //   3. `_totalPendingWithdrawals` is tracked so the admin's
+    //      `emergencyWithdraw` can sweep ONLY stray ETH and never
+    //      accidentally drain a seller's escrowed proceeds.
+    //
+    // Side benefits: the contract never makes an external call inside
+    // `buyShare` to a third-party-controlled receiver (`Address.sendValue`
+    // to msg.sender for the buyer's overpay refund is the only exception
+    // — and the buyer signed the tx themselves, so any reverting
+    // receiver is self-griefing).
     // ------------------------------------------------------------------------
 
     function listShareForSale(
@@ -1312,6 +1395,17 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
                 shareBps: shareBps,
                 timestamp: uint64(block.timestamp),
                 price: price
+            })
+        );
+
+        // Marketplace-specific filtered log (price > 0, settled trades only).
+        _marketplaceHistory[landId].push(
+            MarketplaceTrade({
+                seller: seller,
+                buyer: msg.sender,
+                shareBps: shareBps,
+                price: price,
+                timestamp: uint64(block.timestamp)
             })
         );
 
@@ -2676,6 +2770,26 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // Marketplace views ------------------------------------------------------
     function getListing(string calldata landId, address seller) external view returns (Listing memory) {
         return _listings[landId][seller];
+    }
+
+    /// @notice Full marketplace trade log for `landId` (chronological).
+    ///         Distinct from `_ownershipHistory`, which also includes mints,
+    ///         inheritance redistributions and other non-market events.
+    function getMarketplaceHistory(string calldata landId) external view returns (MarketplaceTrade[] memory) {
+        return _marketplaceHistory[landId];
+    }
+
+    /// @notice One marketplace trade by index. Reverts if out of range.
+    function getMarketplaceTrade(
+        string calldata landId,
+        uint256 index
+    ) external view returns (MarketplaceTrade memory) {
+        return _marketplaceHistory[landId][index];
+    }
+
+    /// @notice Number of marketplace trades ever settled on this land.
+    function totalMarketplaceTrades(string calldata landId) external view returns (uint256) {
+        return _marketplaceHistory[landId].length;
     }
 
     // History view -----------------------------------------------------------
