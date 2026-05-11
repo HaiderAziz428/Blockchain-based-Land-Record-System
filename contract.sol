@@ -132,13 +132,14 @@ error LandRegistry__OccupancyAlreadyRevoked();
  *
  *         v7 therefore implements an explicit HYBRID model:
  *
- *           • Backend ROLES (MINTER, INHERITANCE_ORACLE, SUBDIVISION_ORACLE)
- *             PROPOSE actions based on off-chain authority. They cannot
- *             unilaterally finalise them.
+ *           • REGISTRAR_ROLE (v9 consolidated backend role)
+ *             PROPOSES actions based on off-chain authority — imports,
+ *             inheritance, subdivision. It cannot unilaterally finalise
+ *             any of them.
  *           • ALL affected on-chain stakeholders (proposed owners, heirs,
  *             current shareholders) must CONSENT for the action to take
  *             effect.
- *           • DISPUTE_ARBITER_ROLE is a court-anchored escape hatch.
+ *           • RESOLVER_ROLE is a court-anchored escape hatch.
  *             When unanimous consent stalls, the arbiter resolves WITH a
  *             court-order CID pinned on IPFS — every override is publicly
  *             auditable.
@@ -292,16 +293,16 @@ error LandRegistry__OccupancyAlreadyRevoked();
  *
  *         WHY BACKEND AUTHORITY IS INTENTIONALLY LIMITED
  *         -----------------------------------------------------------------
- *         `MINTER_ROLE` can ONLY:
+ *         `REGISTRAR_ROLE` can ONLY:
  *           • propose imports (filing the record from the off-chain registry)
  *           • cancel its own proposals while still PENDING_VERIFICATION
  *         It CANNOT:
  *           • finalise a mint without all proposed owners verifying
- *           • override a dispute (only DISPUTE_ARBITER_ROLE can, and only
+ *           • override a dispute (only RESOLVER_ROLE can, and only
  *             with a court-order CID)
  *           • move shares, list, buy, initiate inheritance, or initiate
  *             subdivision
- *         A leaked MINTER key cannot steal land — at worst it spam-creates
+ *         A leaked REGISTRAR key cannot steal land — at worst it spam-creates
  *         proposals that all expire after the verification window without
  *         anyone consenting.
  *
@@ -394,11 +395,17 @@ error LandRegistry__OccupancyAlreadyRevoked();
  *             PREV: pre-v5 had a single privileged "backend" address;
  *                   one leaked key = full ownership / inheritance /
  *                   dispute powers.
- *             NOW : six AccessControl roles, each independently
- *                   grantable / revocable: MINTER_ROLE,
- *                   INHERITANCE_ORACLE_ROLE, SUBDIVISION_ORACLE_ROLE,
- *                   DISPUTE_ARBITER_ROLE, GOVT_AUTHORITY_ROLE,
- *                   PAUSER_ROLE + DEFAULT_ADMIN_ROLE.
+ *             NOW : five AccessControl roles, each independently
+ *                   grantable / revocable (v9 consolidation):
+ *                     ADMIN_ROLE      — root governance (multisig)
+ *                     REGISTRAR_ROLE  — backend proposer (import +
+ *                                       inheritance + subdivision)
+ *                     RESOLVER_ROLE   — court-anchored dispute resolver
+ *                     PAUSER_ROLE     — emergency halt
+ *                     GOVT_AUTHORITY_ROLE — institutional holder status
+ *                                           (NOT a backend role).
+ *                   REGISTRAR can only PROPOSE; it cannot finalise.
+ *                   RESOLVER overrides require court / legal CIDs.
  *
  *         (4) Push payment / griefing
  *             PREV: payable purchase paths PUSHED ETH inline to the
@@ -656,7 +663,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     ///           heir → files appeal w/ court order CID → backend reads
     ///           the event → backend verifies the court order off-chain
     ///           (signatures, judge identity, jurisdiction, etc.) → if
-    ///           valid, the backend (INHERITANCE_ORACLE_ROLE) calls
+    ///           valid, the backend (REGISTRAR_ROLE) calls
     ///           `initiateInheritance` referencing the appeal id.
     ///         The backend can also reject the appeal off-chain — in that
     ///         case `isProcessed` simply remains `false` and the appeal
@@ -799,13 +806,102 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // 8. STATE VARIABLES
     // ========================================================================
 
-    // --- Roles (least privilege) --------------------------------------------
-    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
-    bytes32 public constant INHERITANCE_ORACLE_ROLE = keccak256("INHERITANCE_ORACLE_ROLE");
-    bytes32 public constant SUBDIVISION_ORACLE_ROLE = keccak256("SUBDIVISION_ORACLE_ROLE");
-    bytes32 public constant DISPUTE_ARBITER_ROLE = keccak256("DISPUTE_ARBITER_ROLE");
-    bytes32 public constant GOVT_AUTHORITY_ROLE = keccak256("GOVT_AUTHORITY_ROLE");
+    // --- Roles (v9 governance model) -----------------------------------------
+    //
+    // FOUR PRIVILEGED ROLES (governance backbone):
+    //
+    //   ADMIN_ROLE       — root governance role. Grants / revokes the other
+    //                      roles. Aliased to OpenZeppelin's DEFAULT_ADMIN_ROLE
+    //                      so existing AccessControl tooling keeps working.
+    //                      Should be held by a multisig in production.
+    //
+    //   REGISTRAR_ROLE   — the off-chain "backend" / developer-transfer-office
+    //                      operator. Authorised to PROPOSE actions only:
+    //                        • import land records (proposeLandImport)
+    //                        • file inheritance proposals (initiateInheritance)
+    //                        • file subdivision proposals (proposeSubdivision)
+    //                        • cancel its own pending proposals
+    //                      CANNOT finalise any of those alone — finalisation
+    //                      requires on-chain consent from the affected
+    //                      stakeholders (proposed owners, heirs, current
+    //                      shareholders).
+    //
+    //   RESOLVER_ROLE    — court-anchored arbiter. Authorised to:
+    //                        • resolve disputed imports / inheritance /
+    //                          subdivision proposals (force-execute OR cancel)
+    //                        • freeze proposals for formal legal review
+    //                      Every action MUST commit court / legal CIDs and a
+    //                      written reason — see tier-2 audit metadata in
+    //                      section 12.f / 12.g.
+    //
+    //   PAUSER_ROLE      — emergency halt. Can pause / unpause every user-
+    //                      facing write. Withdrawals stay open during pause.
+    //
+    // ONE HOLDER-CLASS ROLE (not a governance role):
+    //
+    //   GOVT_AUTHORITY_ROLE — institutional holders (developer entity wallets,
+    //                         govt-agency wallets). May hold land without a
+    //                         personal CNIC. NOT a backend role.
+    //
+    // ╔══════════════════════════════════════════════════════════════════╗
+    // ║ WHY HYBRID GOVERNANCE EXISTS                                       ║
+    // ╚══════════════════════════════════════════════════════════════════╝
+    //
+    // Pakistani land governance cannot be fully automated on-chain
+    // (ground truth in govt registries; heirship decided by family
+    // courts; disputes need judicial intervention; physical subdivision
+    // needs survey + planning + court). It cannot be fully off-chain
+    // either (paper records are forgeable; the trusted-operator
+    // failure mode produces real-world DHA / Bahria file scams). v9
+    // therefore implements an EXPLICIT HYBRID with three governance
+    // layers:
+    //   1. REGISTRAR proposes (cannot finalise alone)
+    //   2. on-chain stakeholders consent (unanimous → execute)
+    //   3. RESOLVER overrides only with court / legal CIDs pinned on IPFS
+    //
+    // ╔══════════════════════════════════════════════════════════════════╗
+    // ║ WHY ROLE SEPARATION IMPROVES TRUST                                 ║
+    // ╚══════════════════════════════════════════════════════════════════╝
+    //
+    // The role boundaries above are not cosmetic — each one closes a
+    // specific failure mode:
+    //
+    //   REGISTRAR ↔ stakeholder consent
+    //     A REGISTRAR cannot mint, redistribute, or split land without
+    //     stakeholder approval. A leaked REGISTRAR key produces at
+    //     worst spammy proposals that all expire or get rejected.
+    //
+    //   REGISTRAR ↔ RESOLVER
+    //     The actor who PROPOSES is not the actor who RESOLVES. A
+    //     REGISTRAR cannot also force-execute its own disputed
+    //     proposal. Compromising RESOLVER does not give a path to
+    //     issue fresh land records — only to resolve existing
+    //     disputes (and even then with court / legal CID anchors).
+    //
+    //   PAUSER ↔ ADMIN
+    //     The actor who can halt operations is distinct from the actor
+    //     who manages role membership. Halting is a fast operational
+    //     action; role grants are a deliberate governance act.
+    //
+    //   ADMIN as multisig
+    //     The contract is most secure when ADMIN_ROLE is held by a
+    //     multisig — a single-key admin defeats the rotations above by
+    //     letting an attacker who compromises that key re-grant every
+    //     role to themselves. The contract does not enforce this; it's
+    //     an operational requirement.
+    //
+    //   GOVT_AUTHORITY_ROLE is intentionally distinct from REGISTRAR
+    //     GOVT_AUTHORITY is a HOLDER status — letting institutional
+    //     wallets (developer entity, govt agency) own land without a
+    //     personal CNIC. It conveys NO operational powers. A
+    //     compromised GOVT_AUTHORITY wallet behaves exactly like any
+    //     other compromised holder wallet (can transfer / sell its own
+    //     share; cannot affect anyone else's).
+    bytes32 public constant ADMIN_ROLE = DEFAULT_ADMIN_ROLE; // alias of OZ default
+    bytes32 public constant REGISTRAR_ROLE = keccak256("REGISTRAR_ROLE");
+    bytes32 public constant RESOLVER_ROLE = keccak256("RESOLVER_ROLE");
     bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    bytes32 public constant GOVT_AUTHORITY_ROLE = keccak256("GOVT_AUTHORITY_ROLE");
 
     // --- Constants -----------------------------------------------------------
     uint16 public constant TOTAL_SHARES = 10_000;
@@ -1113,23 +1209,27 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // ========================================================================
 
     /**
-     * @param backend Address granted ALL four backend roles by default
-     *                (MINTER, INHERITANCE_ORACLE, SUBDIVISION_ORACLE,
-     *                DISPUTE_ARBITER). Production deployments should
-     *                revoke whichever roles each operator doesn't need
-     *                so a leaked key compromises the narrowest authority.
-     *                Deployer becomes DEFAULT_ADMIN_ROLE + PAUSER_ROLE.
+     * @param backend Address granted both v9 backend roles by default —
+     *                `REGISTRAR_ROLE` (propose imports / inheritance /
+     *                subdivision) and `RESOLVER_ROLE` (resolve disputes).
+     *                Production deployments should revoke `RESOLVER_ROLE`
+     *                from the backend and assign it to a separate court-
+     *                anchored operator wallet, so the same key cannot
+     *                both propose AND force-execute a disputed proposal.
+     *
+     *                Deployer becomes `ADMIN_ROLE` (= DEFAULT_ADMIN_ROLE)
+     *                + `PAUSER_ROLE`. Both should be held by a multisig
+     *                in production — a single-key admin defeats the role
+     *                separation by definition.
      */
     constructor(address backend) ERC721("PakLandRegistry", "PLR") {
         if (backend == address(0)) revert LandRegistry__ZeroAddress();
 
-        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(ADMIN_ROLE, msg.sender);
         _grantRole(PAUSER_ROLE, msg.sender);
 
-        _grantRole(MINTER_ROLE, backend);
-        _grantRole(INHERITANCE_ORACLE_ROLE, backend);
-        _grantRole(SUBDIVISION_ORACLE_ROLE, backend);
-        _grantRole(DISPUTE_ARBITER_ROLE, backend);
+        _grantRole(REGISTRAR_ROLE, backend);
+        _grantRole(RESOLVER_ROLE, backend);
     }
 
     // ========================================================================
@@ -1148,7 +1248,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         _unpause();
     }
 
-    function setGovtAuthority(address wallet, bool status) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setGovtAuthority(address wallet, bool status) external onlyRole(ADMIN_ROLE) {
         if (wallet == address(0)) revert LandRegistry__ZeroAddress();
         if (status) {
             _grantRole(GOVT_AUTHORITY_ROLE, wallet);
@@ -1158,7 +1258,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     }
 
     /// @notice Sweeps STRAY ETH only — never seller escrow.
-    function emergencyWithdraw(address payable to) external onlyRole(DEFAULT_ADMIN_ROLE) nonReentrant {
+    function emergencyWithdraw(address payable to) external onlyRole(ADMIN_ROLE) nonReentrant {
         if (to == address(0)) revert LandRegistry__ZeroAddress();
         uint256 bal = address(this).balance;
         uint256 stray = bal > _totalPendingWithdrawals ? bal - _totalPendingWithdrawals : 0;
@@ -1214,7 +1314,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         string calldata courtOrderCid
     )
         external
-        onlyRole(MINTER_ROLE)
+        onlyRole(REGISTRAR_ROLE)
         whenNotPaused
         boundedString(landId)
         boundedString(ipfsHash)
@@ -1357,7 +1457,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
 
     /// @notice The proposing backend can cancel its own proposal before
     ///         it finalises (status PROPOSED).
-    function cancelLandImport(string calldata landId) external onlyRole(MINTER_ROLE) whenNotPaused {
+    function cancelLandImport(string calldata landId) external onlyRole(REGISTRAR_ROLE) whenNotPaused {
         LandRecord storage record = _landRecords[landId];
         if (record.status != LandStatus.PENDING_VERIFICATION) revert LandRegistry__NotInImportPhase(landId);
 
@@ -1375,7 +1475,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         string calldata landId,
         bool forceApprove,
         string calldata courtOrderCid
-    ) external onlyRole(DISPUTE_ARBITER_ROLE) whenNotPaused nonReentrant boundedString(courtOrderCid) {
+    ) external onlyRole(RESOLVER_ROLE) whenNotPaused nonReentrant boundedString(courtOrderCid) {
         LandRecord storage record = _landRecords[landId];
         if (record.status != LandStatus.LOCKED_IMPORT_DISPUTE) revert LandRegistry__ImportNotDisputed(landId);
 
@@ -1832,7 +1932,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         uint256 appealId
     )
         external
-        onlyRole(INHERITANCE_ORACLE_ROLE)
+        onlyRole(REGISTRAR_ROLE)
         whenNotPaused
         boundedString(courtOrderCid)
         landMustExist(landId)
@@ -1982,7 +2082,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     function freezeInheritanceForReview(
         string calldata landId,
         string calldata reason
-    ) external onlyRole(DISPUTE_ARBITER_ROLE) whenNotPaused boundedString(reason) {
+    ) external onlyRole(RESOLVER_ROLE) whenNotPaused boundedString(reason) {
         if (_landRecords[landId].status != LandStatus.PENDING_INHERITANCE) {
             revert LandRegistry__NoPendingPlan(landId);
         }
@@ -2034,7 +2134,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         string calldata overrideReason
     )
         external
-        onlyRole(DISPUTE_ARBITER_ROLE)
+        onlyRole(RESOLVER_ROLE)
         whenNotPaused
         nonReentrant
         boundedString(updatedCourtOrderCid)
@@ -2145,7 +2245,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
      *                           description.
      *
      * @dev    Requires:
-     *           1. `SUBDIVISION_ORACLE_ROLE` (the legal / survey operator)
+     *           1. `REGISTRAR_ROLE` (the legal / survey operator)
      *           2. Non-empty `courtOrderCid` AND `surveyMetadataCid`
      *           3. UNANIMOUS approval from current shareholders of the
      *              parent (tier 1), OR an arbiter override (tier 2) with
@@ -2164,7 +2264,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         string calldata surveyMetadataCid
     )
         external
-        onlyRole(SUBDIVISION_ORACLE_ROLE)
+        onlyRole(REGISTRAR_ROLE)
         whenNotPaused
         landMustExist(parentLandId)
         onlyActive(parentLandId)
@@ -2241,7 +2341,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     function freezeSubdivisionForReview(
         string calldata parentLandId,
         string calldata reason
-    ) external onlyRole(DISPUTE_ARBITER_ROLE) whenNotPaused boundedString(reason) {
+    ) external onlyRole(RESOLVER_ROLE) whenNotPaused boundedString(reason) {
         if (_landRecords[parentLandId].status != LandStatus.PENDING_SUBDIVISION) {
             revert LandRegistry__NoPendingSubdivision(parentLandId);
         }
@@ -2266,7 +2366,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         string calldata overrideReason
     )
         external
-        onlyRole(DISPUTE_ARBITER_ROLE)
+        onlyRole(RESOLVER_ROLE)
         whenNotPaused
         nonReentrant
         boundedString(updatedCourtOrderCid)
@@ -2351,7 +2451,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     //   - parent parcel remains ONE parcel with ONE NFT
     //
     // Subdivision is IRREVERSIBLE (without re-merger) and DOES CREATE NFTs.
-    //   - filed by SUBDIVISION_ORACLE_ROLE
+    //   - filed by REGISTRAR_ROLE
     //   - requires court order + survey document (both on IPFS)
     //   - requires UNANIMOUS shareholder approval
     //   - parent NFT is BURNED; N children minted
