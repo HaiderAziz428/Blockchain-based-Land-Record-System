@@ -67,7 +67,7 @@
 | **Submission Year** | 2026 |
 | **Project Duration** | 8 months (Sept 2025 — May 2026) |
 | **Deployed Network** | Ethereum Sepolia Testnet |
-| **Deployed Contract** | [`0xd2a855a8fC38d4E0a871319d5882E696155d1253`](https://sepolia.etherscan.io/address/0xd2a855a8fC38d4E0a871319d5882E696155d1253) — _legacy v3; the security-hardened v5 source in `contract.sol` requires redeployment before the frontend can use it (see §Smart Contract Design)_ |
+| **Deployed Contract** | [`0xd2a855a8fC38d4E0a871319d5882E696155d1253`](https://sepolia.etherscan.io/address/0xd2a855a8fC38d4E0a871319d5882E696155d1253) — _legacy v3; the **v6 fractional-ownership source** in `contract.sol` requires redeployment before the frontend can use it (see §Smart Contract Design)_ |
 
 ---
 
@@ -446,33 +446,34 @@ flowchart LR
     G --> H[Render full transfer timeline]
 ```
 
-### 4️⃣ Inheritance (Multi-Heir Approval)
+### 4️⃣ Inheritance — Share Redistribution (v6)
 
 ```mermaid
 sequenceDiagram
-    participant GovtAdmin
+    participant Oracle as Inheritance Oracle
     participant API as /api/inheritance
     participant SC as LandRegistry
     participant H1 as Heir 1
     participant H2 as Heir 2
     participant H3 as Heir 3
 
-    GovtAdmin->>API: POST { oldLandId, heirs[], newIds[], hashes[] }
-    API->>SC: initiateInheritance(...) [onlyBackend]
+    Note over SC: Land X has shareholders:<br/>Father 6000 bps · Co-owner Alice 4000 bps
+    Oracle->>API: POST { landId, deceased: Father, heirs[3], heirShares: [2000, 2000, 2000] }
+    API->>SC: initiateInheritance(landId, Father, heirs, [2000,2000,2000])
+    SC->>SC: Validate: Σ heirShares (6000) == Father's bps (6000) ✅
     SC->>SC: Lock land → PENDING_INHERITANCE
-    SC-->>H1: InheritanceInitiated
-    SC-->>H2: InheritanceInitiated
-    SC-->>H3: InheritanceInitiated
+    SC-->>H1: InheritanceInitiated(Father, 3 heirs, 6000 bps)
 
-    H1->>SC: approveSuccessionPlan(oldId)
-    H2->>SC: approveSuccessionPlan(oldId)
-    H3->>SC: approveSuccessionPlan(oldId)
+    H1->>SC: approveSuccessionPlan(landId)
+    H2->>SC: approveSuccessionPlan(landId)
+    H3->>SC: approveSuccessionPlan(landId)
     SC->>SC: All 3/3 approved → _executeInheritance
-    SC->>SC: Burn old NFT, mint 3 new NFTs
-    SC-->>H1: ✅ New land NFT
-    SC-->>H2: ✅ New land NFT
-    SC-->>H3: ✅ New land NFT
+    SC->>SC: Father: 6000 → 0 (removed)<br/>H1: 0 → 2000<br/>H2: 0 → 2000<br/>H3: 0 → 2000<br/>Alice: 4000 (untouched)
+    SC->>SC: Status → ACTIVE (same tokenId, same landId)
+    Note over SC: Final shareholders:<br/>H1 2000 · H2 2000 · H3 2000 · Alice 4000<br/>Σ = 10000 ✅
 ```
+
+**Key difference vs v5:** the original land NFT (tokenId, IPFS metadata) persists. Heirs become co-shareholders with `Alice` on the same plot — no new NFTs are minted, no subdivision is forced.
 
 ### 5️⃣ Dispute Workflow
 
@@ -494,7 +495,50 @@ flowchart TD
 
 ## 📜 Smart Contract Design
 
-### Single Contract: `LandRegistry.sol` — _v5 Security-Hardened Architecture_
+### Single Contract: `LandRegistry.sol` — _v6 Fractional-Ownership Architecture_
+
+> **Headline change in v6:** ownership is no longer one-address-per-NFT. Each land has 10,000 basis points (= 100%) of shares distributed across one or more co-owners. Transfers, marketplace sales, and inheritance operate on basis-point portions of a single existing NFT — never on duplicate NFTs.
+
+### 🧮 The Fractional Ownership Model
+
+#### Why this redesign
+
+The legacy v1–v5 model assumed **one land = one owner**, and handled inheritance by **burning the original NFT and minting a new NFT per heir**. That's conceptually wrong for three reasons:
+
+| # | Why "one land = one owner" was flawed | What v6 does instead |
+|---|---------------------------------------|----------------------|
+| 1 | **Inheritance does not physically divide land.** When an allottee dies leaving three children, those children most commonly become **co-owners** of the same plot — they do not receive three new physically distinct plots. | Heirs replace the deceased in the share ledger of the same land. No subdivision unless explicitly chosen later. |
+| 2 | **NFT identity continuity was lost.** Burning the original tokenId and assigning new IDs breaks any external system that anchored on it (provenance trackers, lien holders, indexers). | Same `tokenId` and `landId` persist from mint forever. Heirs just appear in the share ledger. |
+| 3 | **No way to sell a partial share.** A holder of a 100% plot who wanted to sell 30% had no on-chain expression. | `listShareForSale(landId, shareBpsForSale, …)` and `buyShare(landId, seller, maxPrice)` are first-class. |
+
+#### Why basis points (10,000 = 100%)
+
+Solidity has no native fractional/decimal type. We use **uint16 basis points** (max 65,535, comfortably fits 10,000) because:
+
+- 0.01% resolution — enough for any realistic split.
+- All-integer math — no rounding pitfalls.
+- Industry standard — every DeFi share/fee contract uses bps; auditors recognise the pattern immediately.
+- 16 bits per shareholder is much cheaper than uint256 percentages in storage and calldata.
+
+#### Invariants (hold for every ACTIVE land)
+
+| | Invariant |
+|---|-----------|
+| **I1** | Σ `_shareBps[landId][h]` over all shareholders == **`TOTAL_SHARES = 10000`** |
+| **I2** | `_shareBps[landId][h] > 0` **⇔** `h` is in `_shareholders[landId]` |
+| **I3** | `_shareholders[landId]` contains no duplicates |
+| **I4** | `_shareholders[landId].length ≤ MAX_SHAREHOLDERS = 100` |
+| **I5** | Every `h ∈ _shareholders[landId]` is an authorised holder (registered citizen OR `GOVT_AUTHORITY_ROLE`) |
+
+These are preserved by construction in `_increaseShare` / `_decreaseShare`, and re-asserted by every share-mutating operation. `getTotalShares(landId)` returns the runtime sum so it can be checked externally.
+
+#### NFT custody model
+
+Every land NFT is minted to `address(this)` (self-custodial) and **can never leave**. The `_update` override rejects every post-mint transition. ERC-721's `ownerOf(tokenId)` therefore returns the contract address itself; **meaningful ownership lives in the basis-point share ledger**, not in `ownerOf`. This trades external-marketplace visibility (OpenSea would see the contract as holder) for a coherent multi-owner model — appropriate for a closed governance-grade registry.
+
+---
+
+### Single Contract: `LandRegistry.sol` — _v6 Layer Stack_
 
 The system intentionally consolidates all logic into a single contract to minimize cross-contract calls and gas overhead. Modules are organized via section comments and follow the canonical Solidity layout order (errors → types → state → events → modifiers → constructor → external → internal → views).
 
@@ -525,64 +569,84 @@ The system intentionally consolidates all logic into a single contract to minimi
 | Module | Purpose |
 |--------|---------|
 | **Identity** | `registerUser`, `getUser`, `cnicToAddress` |
-| **Land Data** | `storeVerifiedLandRecord`, `getLandRecord`, `landExists` (private) |
-| **NFT (ERC-721)** | OpenZeppelin `ERC721`; deterministic `tokenId = keccak256(landId)`; `_update` hook auto-clears stale listings on every transfer |
-| **Marketplace** | `listLandForSale`, `updateListingPrice` _(decrease-only)_, `buyLand(landId, maxPrice)`, `cancelListing`, `getListing` |
-| **Escrow** _(new in v5)_ | `withdrawProceeds`, `pendingProceeds`, `totalPendingWithdrawals` — pull-payment ledger for sale proceeds |
-| **Inheritance** | `initiateInheritance`, `approveSuccessionPlan`, `disputeSuccessionPlan`, `resolveDispute`, `getInheritanceRequest`, `hasHeirApproved` |
-| **Indexing** | `_allLandIds`, `_ownerToLands`, `getAllLandRecordsPaginated`, `getLandsByOwner`, `totalLandRecords` |
-| **Access Control** _(role-separated in v5)_ | `DEFAULT_ADMIN_ROLE`, `MINTER_ROLE`, `INHERITANCE_ORACLE_ROLE`, `DISPUTE_ARBITER_ROLE`, `GOVT_AUTHORITY_ROLE`, `PAUSER_ROLE` |
+| **Land Data** | `storeVerifiedLandRecord`, `getLandRecord`, `_landExists`, `tokenURI` |
+| **NFT (ERC-721)** | OpenZeppelin `ERC721`; deterministic `tokenId = keccak256(landId)`; **self-custodial** — `_update` override rejects all post-mint transitions |
+| **Share Ledger** _(v6 core)_ | `transferShare`, `getShareholders`, `getShareholdersWithBps`, `getShareBps`, `getTotalShares` |
+| **Marketplace** _(per-share)_ | `listShareForSale`, `updateListingPrice` _(decrease-only)_, `buyShare(landId, seller, maxPrice)`, `cancelListing`, `getListing(landId, seller)` |
+| **Escrow** | `withdrawProceeds`, `pendingProceeds`, `totalPendingWithdrawals` — pull-payment ledger |
+| **Inheritance** _(redistributes shares, never mints)_ | `initiateInheritance`, `approveSuccessionPlan`, `disputeSuccessionPlan`, `resolveDispute`, `getInheritanceRequest`, `hasHeirApproved` |
+| **Indexing** | `_allLandIds`, `_ownerToLands`, `getAllLandRecordsPaginated`, `getLandsByOwner`, `getLandsByCnic`, `totalLandRecords` |
+| **Access Control** | `DEFAULT_ADMIN_ROLE`, `MINTER_ROLE`, `INHERITANCE_ORACLE_ROLE`, `DISPUTE_ARBITER_ROLE`, `GOVT_AUTHORITY_ROLE`, `PAUSER_ROLE` |
 | **Lifecycle** | `pause`, `unpause`, `emergencyWithdraw` _(stray-ETH only)_, `setGovtAuthority` |
-| **Transfers** | `transferLandOwnership`, `OwnershipHistory[]` log |
+| **History** | `OwnershipChange[]` log per land — one entry per shareholder change (mint, transfer, sale, inheritance) |
 
 ### Key Functions
 
 | Function | Caller | Modifier(s) | Description |
 |----------|--------|-------------|-------------|
 | `registerUser(name, cnic)` | Citizen | `whenNotPaused`, `boundedString` | One-time wallet ↔ CNIC binding |
-| `storeVerifiedLandRecord(...)` | Minter | `onlyRole(MINTER_ROLE)`, `whenNotPaused`, `nonReentrant`, `boundedString` | Mints land NFT after off-chain verification |
-| `transferLandOwnership(landId, newOwner, salePrice)` | Owner | `whenNotPaused`, `nonReentrant`, `landMustExist`, `onlyActive` | Direct transfer with sale-price logging |
-| `listLandForSale(landId, price, metaHash)` | Owner | `whenNotPaused`, `landMustExist`, `onlyActive`, `boundedString` | Creates 7-day marketplace listing |
-| `updateListingPrice(landId, newPrice)` | Seller | `whenNotPaused` | **Decrease only** — keeps deadline; raises require cancel+relist |
-| `buyLand(landId, maxPrice)` _(maxPrice new in v5)_ | Registered or Govt-Authority Buyer | `whenNotPaused`, `nonReentrant`, `landMustExist`, `onlyActive`, `payable` | ETH-settled atomic purchase; reverts if listing price > `maxPrice`; refunds excess; credits seller via escrow |
-| `withdrawProceeds()` _(new in v5)_ | Any seller with balance | `nonReentrant` _(NOT whenNotPaused)_ | Pull-payment claim of accumulated sale proceeds |
-| `cancelListing(landId)` | Owner | `whenNotPaused` | Removes active listing |
-| `initiateInheritance(...)` | Oracle | `onlyRole(INHERITANCE_ORACLE_ROLE)`, `whenNotPaused`, `landMustExist`, `onlyActive` | Pre-validates inputs (incl. heir ≠ current owner), opens succession proposal with fresh nonce |
-| `approveSuccessionPlan(oldLandId)` | Heir | `whenNotPaused`, `nonReentrant` | Vote yes; auto-executes at 100% |
-| `disputeSuccessionPlan(oldLandId)` | Heir | `whenNotPaused` | Single dispute → permanent lock |
-| `resolveDispute(oldLandId, force)` | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `nonReentrant` | Force-execute or revert to `ACTIVE` |
+| `storeVerifiedLandRecord(owner, landId, ipfsHash, type)` | Minter | `onlyRole(MINTER_ROLE)`, `whenNotPaused`, `nonReentrant`, `boundedString` | Mints land NFT; initial `owner` receives 100% (10,000 bps) of shares |
+| **`transferShare(landId, recipient, shareBps, price)`** _(v6)_ | Shareholder | `whenNotPaused`, `nonReentrant`, `landMustExist`, `onlyActive` | Transfer a basis-point portion (or all) of caller's share. To transfer 100% pass `shareBps = 10000` |
+| **`listShareForSale(landId, shareBpsForSale, price, metaHash)`** _(v6)_ | Shareholder | `whenNotPaused`, `landMustExist`, `onlyActive`, `boundedString` | List a basis-point portion of caller's share for sale; 7-day deadline |
+| `updateListingPrice(landId, newPrice)` | Seller | `whenNotPaused` | **Decrease only** on caller's own listing; keeps deadline |
+| **`buyShare(landId, seller, maxPrice)`** _(v6)_ | Registered or Govt-Authority Buyer | `whenNotPaused`, `nonReentrant`, `landMustExist`, `onlyActive`, `payable` | Atomic purchase of `seller`'s listed share; reverts if `price > maxPrice`; refunds excess; credits seller via escrow |
+| `withdrawProceeds()` | Any seller with balance | `nonReentrant` _(NOT whenNotPaused)_ | Pull-payment claim of accumulated sale proceeds |
+| `cancelListing(landId)` | Seller | `whenNotPaused` | Removes caller's listing for `landId` |
+| **`initiateInheritance(landId, deceasedHolder, heirs[], heirShares[])`** _(v6 redesigned)_ | Oracle | `onlyRole(INHERITANCE_ORACLE_ROLE)`, `whenNotPaused`, `landMustExist`, `onlyActive` | Opens proposal that redistributes `deceasedHolder`'s shares across heirs; `heirShares[]` must sum to `_shareBps[landId][deceased]` |
+| `approveSuccessionPlan(landId)` | Heir | `whenNotPaused`, `nonReentrant` | Vote yes; auto-executes at 100% — heirs become co-shareholders of the same NFT |
+| `disputeSuccessionPlan(landId)` | Heir | `whenNotPaused` | Single dispute → permanent lock |
+| `resolveDispute(landId, force)` | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `nonReentrant` | Force-execute or revert to `ACTIVE` |
 | `setGovtAuthority(wallet, status)` | Admin | `onlyRole(DEFAULT_ADMIN_ROLE)` | Grant/revoke `GOVT_AUTHORITY_ROLE` |
 | `pause()` / `unpause()` | Pauser | `onlyRole(PAUSER_ROLE)` | Halts/resumes user-facing writes |
-| `emergencyWithdraw(to)` | Admin | `onlyRole(DEFAULT_ADMIN_ROLE)`, `nonReentrant` | Sweeps **stray ETH only** (never `_totalPendingWithdrawals`) |
-| `getLandRecord(landId)` | Anyone | view | Public verification |
+| `emergencyWithdraw(to)` | Admin | `onlyRole(DEFAULT_ADMIN_ROLE)`, `nonReentrant` | Sweeps **stray ETH only** (never seller escrow) |
+| `getLandRecord(landId)` | Anyone | view | Public verification (no longer carries `currentOwner` — use share views) |
+| **`getShareholders(landId)`** _(v6)_ | Anyone | view | Ordered shareholder list |
+| **`getShareholdersWithBps(landId)`** _(v6)_ | Anyone | view | Parallel arrays of holders + their bps |
+| **`getShareBps(landId, holder)`** _(v6)_ | Anyone | view | O(1) share lookup for a single holder |
+| **`getTotalShares(landId)`** _(v6)_ | Anyone | view | Runtime Σ of all shareholder bps — should always be 10,000 for active land |
+| `getListing(landId, seller)` | Anyone | view | Listing details for a (land, seller) pair |
 | `getAllLandRecordsPaginated(cursor, size)` | Anyone | view | Cursor-based admin pagination |
-| `getInheritanceRequest(landId)` | Anyone | view | Returns full proposal incl. arrays |
+| `getInheritanceRequest(landId)` | Anyone | view | Full proposal incl. deceased + heir-shares arrays |
 | `hasHeirApproved(landId, heir)` | Anyone | view | Per-nonce vote check |
-| `pendingProceeds(account)` _(new in v5)_ | Anyone | view | Pull-payment balance for a seller |
-| `totalPendingWithdrawals()` _(new in v5)_ | Anyone | view | Total ETH credited but unwithdrawn (transparency) |
+| `pendingProceeds(account)` | Anyone | view | Pull-payment balance for a seller |
+| `totalPendingWithdrawals()` | Anyone | view | Total ETH credited but unwithdrawn |
 
 ### Events Emitted
 
 ```solidity
 event UserRegistered(address indexed user, string name, string cnic);
-event LandMinted(address indexed owner, string indexed landId, LandType lType, uint256 tokenId);
-event LandTransferred(string indexed landId, address indexed from, address indexed to, uint256 price);
-event LandListed(string indexed landId, uint256 price, address indexed seller, string metadataHash);
-event ListingPriceUpdated(string indexed landId, uint256 oldPrice, uint256 newPrice);
-event ListingCancelled(string indexed landId);
-event LandSold(string indexed landId, address indexed buyer, address indexed seller, uint256 price);
-event ProceedsCredited(address indexed seller, uint256 amount);          // v5
-event ProceedsWithdrawn(address indexed seller, uint256 amount);         // v5
-event InheritanceInitiated(string indexed oldLandId, uint256 totalHeirs, uint256 proposalNonce);
-event HeirApproved(string indexed oldLandId, address indexed heir, uint256 proposalNonce);
-event InheritanceDisputed(string indexed oldLandId, address indexed heir, uint256 proposalNonce);
-event InheritanceFinalized(string indexed oldLandId, uint256 proposalNonce);
-event DisputeResolved(string indexed oldLandId, bool forceExecuted);
+event LandMinted(address indexed initialOwner, string indexed landId, LandType lType, uint256 tokenId);
+
+// Share-ledger (v6) ------------------------------------------------------------
+event ShareholderAdded(string indexed landId, address indexed holder, uint16 shareBps);
+event ShareholderRemoved(string indexed landId, address indexed holder);
+event ShareTransferred(string indexed landId, address indexed from, address indexed to, uint16 shareBps, uint256 price);
+
+// Marketplace (v6 — per share) -------------------------------------------------
+event ShareListed(string indexed landId, address indexed seller, uint16 shareBpsForSale, uint256 price, string metadataHash);
+event ListingPriceUpdated(string indexed landId, address indexed seller, uint256 oldPrice, uint256 newPrice);
+event ListingCancelled(string indexed landId, address indexed seller);
+event ShareSold(string indexed landId, address indexed buyer, address indexed seller, uint16 shareBps, uint256 price);
+
+// Pull-payment -----------------------------------------------------------------
+event ProceedsCredited(address indexed seller, uint256 amount);
+event ProceedsWithdrawn(address indexed seller, uint256 amount);
+
+// Inheritance (v6 carries deceased + heir count) -------------------------------
+event InheritanceInitiated(string indexed landId, address indexed deceasedHolder, uint256 totalHeirs, uint16 deceasedShareBps, uint256 proposalNonce);
+event HeirApproved(string indexed landId, address indexed heir, uint256 proposalNonce);
+event InheritanceDisputed(string indexed landId, address indexed heir, uint256 proposalNonce);
+event InheritanceFinalized(string indexed landId, uint256 proposalNonce);
+event DisputeResolved(string indexed landId, bool forceExecuted);
+
+// Other ------------------------------------------------------------------------
 event LandStatusChanged(string indexed landId, LandStatus status);
 event EmergencyWithdrawal(address indexed to, uint256 amount);
-// AccessControl also emits RoleGranted / RoleRevoked / RoleAdminChanged.
+// AccessControl emits RoleGranted / RoleRevoked / RoleAdminChanged.
 // Pausable emits Paused / Unpaused.
 ```
+
+> **Removed in v6:** `LandTransferred`, `LandListed`, `LandSold` — replaced by their share-aware equivalents (`ShareTransferred`, `ShareListed`, `ShareSold`). Indexers parsing the old events must migrate.
 
 ### Custom Errors
 
@@ -783,17 +847,33 @@ erDiagram
 
 ```solidity
 enum LandType   { RESIDENTIAL, AGRICULTURAL, COMMERCIAL }
-enum LandStatus { ACTIVE, PENDING_INHERITANCE, LOCKED_DISPUTE, INHERITED }
+enum LandStatus { ACTIVE, PENDING_INHERITANCE, LOCKED_DISPUTE }   // INHERITED removed — land persists through inheritance
 
-struct LandRecord       { address currentOwner; string cnic; string landId; string ipfsHash; LandType landType; LandStatus status; uint64 verifiedAt; }
+// Land identity. v6 removes currentOwner + cnic (no single value with multi-owner).
+struct LandRecord       { string landId; string ipfsHash; LandType landType; LandStatus status; uint64 verifiedAt; }
+
 struct UserProfile      { string name; string cnic; bool isRegistered; }
-struct Listing          { uint256 price; address seller; bool isActive; uint64 deadline; string metadataHash; }
-struct OwnershipHistory { address owner; uint64 timestamp; uint256 price; }
-struct InheritanceRequest { address[] heirs; string[] newLandIds; string[] newIpfsHashes; uint256 approvalCount; bool isExecuted; uint256 proposalNonce; }
-// Vote and heir-membership ledgers live in separate mappings keyed by proposalNonce
-// so re-issued proposals (after a dispute reset) get fresh state:
-//   mapping(string => mapping(uint256 => mapping(address => bool))) _heirApproved;
-//   mapping(string => mapping(uint256 => mapping(address => bool))) _isHeirFor;
+
+// Listing is now per (landId, seller) — multiple shareholders may list concurrently.
+struct Listing          { uint16 shareBpsForSale; uint256 price; address seller; bool isActive; uint64 deadline; string metadataHash; }
+
+// One row per shareholder change (mint, transfer, sale, inheritance leg).
+struct OwnershipChange  { address from; address to; uint16 shareBps; uint64 timestamp; uint256 price; }
+
+// Inheritance redistributes one holder's share across heirs (sum == deceased's bps).
+struct InheritanceRequest { address deceasedHolder; address[] heirs; uint16[] heirShares; uint256 approvalCount; bool isExecuted; uint256 proposalNonce; }
+
+// --- Share ledger (the v6 core) -----------------------------------------------
+//   mapping(string => address[])                    _shareholders        // enumeration
+//   mapping(string => mapping(address => uint16))   _shareBps            // O(1) bps lookup
+//   mapping(string => mapping(address => uint256))  _shareholderIndex    // swap-and-pop position
+//
+// Invariants (held by construction):
+//   I1: Σ _shareBps[landId][h] == 10000 for every ACTIVE land
+//   I2: _shareBps[landId][h] > 0 ⇔ h ∈ _shareholders[landId]
+//   I3: _shareholders contains no duplicates
+//   I4: _shareholders.length ≤ MAX_SHAREHOLDERS (100)
+//   I5: every holder is an authorised holder (registered citizen or GOVT_AUTHORITY_ROLE)
 ```
 
 ### Off-Chain Data (Single Govt Supabase — *mock*)
@@ -891,9 +971,9 @@ ADMIN_PRIVATE_KEY=0xYOUR_ADMIN_WALLET_PRIVATE_KEY
 
 > ⚠️ **Security:** `ADMIN_PRIVATE_KEY` belongs to the wallet set as `verificationBackend` during contract deployment. Never commit it. Never expose it to the client.
 
-### Step 4 — Re-Deploy the Smart Contract (required for v5)
+### Step 4 — Re-Deploy the Smart Contract (required for v6)
 
-> ⚠️ **The Sepolia contract at `0xd2a855a8fC38d4E0a871319d5882E696155d1253` is the legacy v3 source.** The v5 security-hardened source in `contract.sol` has a different ABI (split roles, new `maxPrice` parameter on `buyLand`, pull-payment functions, decrease-only price update, custom errors) and must be redeployed before the frontend can use it.
+> ⚠️ **The Sepolia contract at `0xd2a855a8fC38d4E0a871319d5882E696155d1253` is the legacy v3 source.** The v6 fractional-ownership source in `contract.sol` has a fundamentally different ABI — `buyLand` is replaced by `buyShare(landId, seller, maxPrice)`, `transferLandOwnership` by `transferShare(landId, recipient, shareBps, price)`, `listLandForSale` by `listShareForSale(landId, shareBpsForSale, price, metaHash)`. Plus all v5 changes (role separation, pull payment, custom errors). Redeployment is mandatory.
 
 ```bash
 # In Remix IDE or your Hardhat / Foundry project:
@@ -916,11 +996,25 @@ ADMIN_PRIVATE_KEY=0xYOUR_ADMIN_WALLET_PRIVATE_KEY
 #         want on the original `backend` wallet.
 # 5. Update CONTRACT_ADDRESS in src/utils/contract.ts
 # 6. Regenerate the ABI in src/utils/contract.ts from the new artifact
-# 7. Frontend changes needed for v5:
-#    - buyLand calls must pass maxPrice (typically =listing.price)
-#    - After a buyLand confirms, the seller's UI should expose a
-#      "Withdraw proceeds" button calling withdrawProceeds()
-#    - updateListingPrice will revert if newPrice >= currentPrice
+# 7. Frontend changes needed for v6:
+#    - Replace buyLand(landId, maxPrice) with
+#      buyShare(landId, seller, maxPrice). The buyer chooses WHICH seller's
+#      listing to buy (a land may have multiple concurrent listings, one
+#      per shareholder).
+#    - Replace transferLandOwnership(landId, newOwner, price) with
+#      transferShare(landId, recipient, shareBps, price). To transfer 100%
+#      pass shareBps = 10000.
+#    - Replace listLandForSale(landId, price, metaHash) with
+#      listShareForSale(landId, shareBpsForSale, price, metaHash).
+#    - Inheritance payload changes: { landId, deceasedHolder, heirs[],
+#      heirShares[] } where heirShares is bps (sum == deceased's share).
+#    - LandRecord no longer has currentOwner — render via getShareholders /
+#      getShareholdersWithBps.
+#    - Marketplace UI should support listing/buying partial shares (show
+#      "buy 25% of plot X" rather than "buy plot X").
+#    - After a buyShare confirms, the seller's UI should expose a
+#      "Withdraw proceeds" button calling withdrawProceeds().
+#    - updateListingPrice still reverts if newPrice >= currentPrice.
 ```
 
 ### Step 5 — Run the Dev Server
@@ -1128,6 +1222,7 @@ flowchart LR
 | 14 | **ERC-721 metadata standard compliance** — earlier prototypes stored just the deed CID on-chain, breaking marketplace integrations (OpenSea etc.) | `DigitizationModal` now builds a proper ERC-721 metadata JSON `{name, image, attributes[], documents[]}`, pins that to IPFS, and stores its CID on-chain. The deed file is referenced via the JSON's `image` and `documents[]` fields. |
 | 15 | **v3 contract had 11 audit-class issues** — stuck overpayments in `buyLand`, stale listings after direct transfer, stale `hasApproved` after dispute reset, duplicate-heir deadlock, last-vote DoS on landId collision, immutable backend (no rotation), no pause mechanism, no reentrancy guard, no event on govt-authority changes, govt authority couldn't buy on marketplace, deceased's owner-index not cleaned on burn | **v4 refactor:** swapped `Ownable` for `AccessControl` (3 rotatable roles), added `Pausable` + `ReentrancyGuard`, introduced `proposalNonce` for inheritance vote scoping, pre-validated all inheritance inputs, overrode `_update` to auto-clear stale listings, refunded buyer overpays, replaced every `require` string with custom errors, added `LandStatus.INHERITED` terminal state, added `updateListingPrice`. See *Bugs Fixed in v4* table above. |
 | 16 | **v4 still had structural security weaknesses** — push payments in `buyLand` could be griefed by malicious-seller `receive()`; `BACKEND_ROLE` bundled mint + inheritance + dispute (compromise = full powers); `updateListingPrice` allowed silent raises enabling seller-side front-running; `buyLand` had no buyer-side price-slippage guard; `nonReentrant` was only on `buyLand` (not on other NFT-callback paths); user strings had no length cap; `emergencyWithdraw` could theoretically drain seller escrow | **v5 security hardening:** pull-payment escrow (`_pendingWithdrawals` + `withdrawProceeds`); role separation into `MINTER_ROLE` / `INHERITANCE_ORACLE_ROLE` / `DISPUTE_ARBITER_ROLE`; `maxPrice` parameter on `buyLand`; decrease-only `updateListingPrice`; `nonReentrant` on every NFT-mutating external function; `MAX_STRING_LENGTH` cap + `boundedString` modifier; `_totalPendingWithdrawals` accounting protects seller escrow from `emergencyWithdraw`; `withdrawProceeds` not gated by `pause`; heir ≠ current owner sanity check; `Address.sendValue` for all outgoing ETH. |
+| 17 | **The "one land = one owner" model was conceptually wrong.** Inheritance burned the original NFT and minted a fresh NFT per heir — modelling succession as forced physical subdivision. In reality, when a Pakistani allottee dies leaving three children, those children become **co-owners** of the same plot, not three new plots. The model also lost NFT identity continuity (new tokenIds break provenance trackers / indexers) and provided no way to sell a partial share. | **v6 fractional-ownership refactor:** introduced a basis-point share ledger (`_shareBps[landId][holder]`, `TOTAL_SHARES = 10000`). Each land has exactly one NFT for its lifetime; ownership is the share ledger. Five invariants (Σ shares = 10000, no zero-share holders, no duplicates, ≤ MAX_SHAREHOLDERS, all holders authorised). Inheritance now redistributes the deceased's shares — no burn, no remint, other co-owners untouched. Added `transferShare`, `listShareForSale`, `buyShare(landId, seller, maxPrice)` for partial-ownership operations. NFT is self-custodial (minted to `address(this)`) — `_update` override rejects all post-mint transitions, preventing accidental NFT movement that would desync from the share ledger. |
 
 ---
 
