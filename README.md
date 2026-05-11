@@ -540,6 +540,41 @@ ACTIVE ────┬── initiateInheritance ──────────�
                                                          └── arbiter cancel ─────────→ ACTIVE
 ```
 
+### 🏗️ Two-Layer Architecture
+
+The contract is organised as two **orthogonal** layers. Every state variable and every external function belongs to exactly one of them.
+
+| | **Layer 1 — Land Identity** | **Layer 2 — Ownership Ledger** |
+|---|------|------|
+| **What it models** | The EXISTENCE of a parcel | The legal owners + their shares |
+| **Backing primitive** | ERC-721 NFT (one per parcel for life) | `_shareBps[landId][holder]` mapping |
+| **Custody** | Self-custodial (NFT minted to `address(this)`, `_update` rejects external transfers) | n/a — the share ledger is not a transferable token |
+| **Created by** | `_finalizeImport` (after every proposed owner verifies) | `_finalizeImport` (initial owners), `transferShare`, `buyShare`, `_executeInheritance` |
+| **Destroyed by** | `_executeSubdivision` (parent NFT burned) | `_executeSubdivision` (parent share ledger cleared) |
+| **Stable across** | Inheritance, transfers, marketplace sales — **the tokenId never changes** | Subdivision — child lands get fresh ledgers |
+| **Key state** | `_landRecords`, `_landExists`, `_tokenIdToLandId`, `_allLandIds` | `_shareholders`, `_shareBps`, `_shareholderIndex`, `_ownerToLands`, `_ownershipHistory`, `_listings`, `_inheritanceRequests`, `_pendingWithdrawals` |
+| **Key views** | `tokenURI`, `getLandRecord`, **`getLandIdentity` _(new)_**, `ownerOf` | `getShareholders`, `getShareholdersWithBps`, `getShareBps`, `getTotalShares`, **`getOwnershipSnapshot` _(new)_**, `getOwnershipHistory` |
+| **Combined view** | — | — |
+| | | `getLandFullView(landId)` returns both layers in a single RPC |
+
+#### Why ERC-721 alone is insufficient for land
+
+| Pain point with plain ERC-721 | LandLedger's answer |
+|---|---|
+| ERC-721 enforces **one owner per tokenId**. Real parcels routinely have multiple legal co-owners (spouses, siblings, partners). | The NFT is identity only; the share ledger expresses multi-ownership natively. |
+| Inheritance creates new owners **without** physical subdivision. ERC-721 has no way to redistribute while keeping the tokenId stable. | `initiateInheritance` is purely layer-2 — tokenId is invariant. |
+| **Partial sales** (sell 30% of a plot) require minting fractional NFTs or wrappers, which destroy identity continuity. | `buyShare(landId, seller, maxPrice)` adjusts only bps. The plot stays one NFT. |
+| "Who legally owns this parcel?" is a list with shares in most jurisdictions, not a single address. | `getOwnershipSnapshot` returns the list + shares + total in one call. |
+
+#### Why ownership redistribution differs from subdivision
+
+| Operation | Layer | What changes | What does NOT change |
+|---|---|---|---|
+| `transferShare`, `buyShare`, inheritance | **Layer 2 only** | `_shareBps` entries for the involved holders; ownership history appended | tokenId, IPFS metadata, NFT custody, total share count (still 10,000) |
+| `proposeSubdivision` → `_executeSubdivision` | **Layer 1** | Parent NFT burned + status `SUBDIVIDED` (terminal); N new tokenIds minted with fresh ledgers; **court-order CID required at propose** | None — this is the only operation that creates new land NFTs after import |
+
+The distinction matters because in the real world, "this parcel changed hands" and "this parcel was physically split" are completely different legal events. Conflating them produces wrong on-chain records.
+
 ### 🧮 The Fractional Ownership Model (carried from v6)
 
 ### 🧮 The Fractional Ownership Model
@@ -657,6 +692,9 @@ The system intentionally consolidates all logic into a single contract to minimi
 | `pause()` / `unpause()` | Pauser | `onlyRole(PAUSER_ROLE)` | Halts/resumes user-facing writes |
 | `emergencyWithdraw(to)` | Admin | `onlyRole(DEFAULT_ADMIN_ROLE)`, `nonReentrant` | Sweeps **stray ETH only** (never seller escrow) |
 | `getLandRecord(landId)` | Anyone | view | Public verification (no `currentOwner`/`cnic` field — use share views) |
+| **`getLandIdentity(landId)`** _(new — layer-1 projection)_ | Anyone | view | Returns `LandIdentity` view-struct: pure identity (landId, ipfsHash, type, status, timestamps) + derived `tokenId` |
+| **`getOwnershipSnapshot(landId)`** _(new — layer-2 projection)_ | Anyone | view | Returns `OwnershipSnapshot` view-struct: shareholders[] + shares[] + total + count, one RPC |
+| **`getLandFullView(landId)`** _(new — both layers combined)_ | Anyone | view | Returns `(LandIdentity, OwnershipSnapshot)` together for the land-detail page |
 | `getShareholders(landId)` / `getShareholdersWithBps(landId)` | Anyone | view | Shareholder enumeration |
 | `getShareBps(landId, holder)` / `getTotalShares(landId)` | Anyone | view | Per-holder + runtime-sum bps views |
 | `getListing(landId, seller)` | Anyone | view | Listing for a (land, seller) pair |
@@ -1341,6 +1379,7 @@ flowchart LR
 | 17 | **The "one land = one owner" model was conceptually wrong.** Inheritance burned the original NFT and minted a fresh NFT per heir — modelling succession as forced physical subdivision. In reality, when a Pakistani allottee dies leaving three children, those children become **co-owners** of the same plot, not three new plots. The model also lost NFT identity continuity (new tokenIds break provenance trackers / indexers) and provided no way to sell a partial share. | **v6 fractional-ownership refactor:** introduced a basis-point share ledger (`_shareBps[landId][holder]`, `TOTAL_SHARES = 10000`). Each land has exactly one NFT for its lifetime; ownership is the share ledger. Five invariants (Σ shares = 10000, no zero-share holders, no duplicates, ≤ MAX_SHAREHOLDERS, all holders authorised). Inheritance now redistributes the deceased's shares — no burn, no remint, other co-owners untouched. Added `transferShare`, `listShareForSale`, `buyShare(landId, seller, maxPrice)` for partial-ownership operations. NFT is self-custodial (minted to `address(this)`) — `_update` override rejects all post-mint transitions, preventing accidental NFT movement that would desync from the share ledger. |
 | 18 | **v6 still treated the backend as a unilateral oracle**: `storeVerifiedLandRecord` minted the NFT immediately on the backend's say-so, with no on-chain check that the proposed co-owners agreed with the imported share split. A corrupt or erroneous backend could silently mint to wrong owners. The model also had no on-chain workflow for *deliberate* legal subdivision (when heirs actually do want separate plots) and no on-chain expression of occupancy / use-rights distinct from ownership. | **v7 hybrid-governance refactor:** Pakistani land governance is explicitly modelled as hybrid (chain holds identity; courts, the developer registry, and proposed owners themselves hold legal authority). Three changes anchor this: (a) **Land import is two-phase** — `proposeLandImport` files a record with proposed co-owners and shares; each owner calls `verifyLandImport`; the NFT mints + share ledger populates only after ALL verify. (b) **Legal subdivision is a first-class workflow** — `SUBDIVISION_ORACLE_ROLE` files a court-anchored plan with per-child shareholder/share allocations; ALL current shareholders must approve; on execution the parent NFT is burned (status → `SUBDIVIDED`, terminal) and N new child NFTs are minted with their own share ledgers. (c) **Occupancy / use-right agreements** are a separate ledger from ownership — any shareholder can grant a time-bound right of use to a non-owner; does NOT affect the share ledger. Every dispute-arbiter override now requires a `courtOrderCid` (IPFS) — every legal-authority override is publicly auditable. `BACKEND_ROLE` further split into `MINTER` / `INHERITANCE_ORACLE` / `SUBDIVISION_ORACLE` / `DISPUTE_ARBITER` for tightest least-privilege. Eight-state lifecycle. |
 | 19 | **v7 import flow could be stuck indefinitely** — without a deadline, a single non-responding proposed owner could permanently park a `landId` in the verification phase, blocking any subsequent re-import of the same parcel. The status name `PROPOSED` also under-communicated the consent-pending semantics to off-chain integrators. The audit panel had no atomic "show me everyone still owing a verification" view. | **v7 verification refinements:** (a) renamed `LandStatus.PROPOSED` → `LandStatus.PENDING_VERIFICATION` for clarity; (b) added `VERIFICATION_DURATION = 90 days` and stored `verificationDeadline` on every `ImportProposal`; `verifyLandImport` now reverts if past deadline; (c) added `expireLandImport(landId)` — public utility callable by anyone after the deadline elapses, deletes the shell so the `landId` is free for re-import; (d) emitted `verificationCount` / `ownersTotal` in `LandImportVerified` and `verificationDeadline` in `LandImportProposed` for indexers; (e) added `getPendingVerifiers(landId)` and `getVerificationStatus(landId)` views for the verification dashboard; (f) strengthened NatSpec under "WHY OWNER CONSENSUS IS NECESSARY", "WHY BACKEND AUTHORITY IS INTENTIONALLY LIMITED", and "WHY MINTING ONLY AFTER VERIFICATION". |
+| 20 | **The two-layer architecture (identity vs. ownership) was implicit** — the rationale lived only in spread-out NatSpec snippets, and there were no first-class projection views that exposed each layer separately. Integrators conflated `ownerOf(tokenId)` (which returns `address(this)` because the NFT is self-custodial) with legal ownership, even though legal ownership lives entirely in the share ledger. | **Identity / ownership separation made explicit.** Contract preamble gained a dedicated `TWO-LAYER ARCHITECTURE` block plus matching `WHY ERC-721 ALONE IS INSUFFICIENT FOR LAND` and `WHY OWNERSHIP REDISTRIBUTION DIFFERS FROM SUBDIVISION` sections. Section headers in the body now carry explicit `LAYER 1` / `LAYER 2` labels. New view-only structs: `LandIdentity` (pure layer-1 fields + derived `tokenId`) and `OwnershipSnapshot` (shareholders + shares + total + count). New external views: `getLandIdentity`, `getOwnershipSnapshot`, `getLandFullView` (both layers in one RPC). Key external functions (`transferShare`, `buyShare`, `initiateInheritance`, `proposeSubdivision`) now open with explicit `**LAYER-1 OP**` / `**LAYER-2 OP**` NatSpec tags so the reviewer always knows which layer a function mutates. No behavioural change — purely architectural-clarity refactor. |
 
 ---
 

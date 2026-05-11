@@ -141,7 +141,105 @@ error LandRegistry__OccupancyAlreadyRevoked();
  *             metadata, court orders, occupancy agreements). On-chain
  *             stores only the CID — small, immutable, tamper-evident.
  *
- *         CRITICAL DISTINCTIONS (audit comprehension)
+ *         TWO-LAYER ARCHITECTURE (canonical)
+ *         -----------------------------------------------------------------
+ *         The contract is organised as two ORTHOGONAL layers. Every state
+ *         variable and every external function belongs to exactly one of
+ *         them. Audit comprehension begins here.
+ *
+ *           ┌──────────────────────────────────────────────────────────┐
+ *           │ LAYER 1 — LAND IDENTITY                                   │
+ *           │ ──────────────────────────                               │
+ *           │ ERC-721 NFTs that represent the EXISTENCE of a parcel.   │
+ *           │ One NFT per parcel for the lifetime of the parcel.       │
+ *           │ Permanent and stable. Self-custodial — minted to         │
+ *           │ `address(this)`; the `_update` override rejects every     │
+ *           │ external transfer attempt. The NFT carries:               │
+ *           │   • a deterministic tokenId   (keccak256(landId))         │
+ *           │   • a stable tokenURI         (ipfs://<metadata-CID>)    │
+ *           │   • a lifecycle status        (PENDING_VERIFICATION,      │
+ *           │                                ACTIVE, PENDING_*,         │
+ *           │                                LOCKED_*, SUBDIVIDED)      │
+ *           │ Identity is created ONLY by `_finalizeImport` after every │
+ *           │ proposed owner has verified. Identity is destroyed ONLY  │
+ *           │ by `_executeSubdivision` (court-anchored, parent NFT      │
+ *           │ burns, child NFTs mint).                                  │
+ *           │                                                           │
+ *           │ Layer-1 state:   _landRecords, _landExists,               │
+ *           │                  _tokenIdToLandId, _allLandIds            │
+ *           │ Layer-1 reads:   tokenURI, getLandRecord,                 │
+ *           │                  getLandIdentity, ownerOf                 │
+ *           │ Layer-1 writes:  proposeLandImport,                       │
+ *           │                  _finalizeImport (mint),                  │
+ *           │                  _executeSubdivision (burn + mint)        │
+ *           ├──────────────────────────────────────────────────────────┤
+ *           │ LAYER 2 — OWNERSHIP LEDGER                                │
+ *           │ ──────────────────────────                               │
+ *           │ Basis-point share accounting for every active land. The  │
+ *           │ legally-relevant "who owns this parcel" record. Multiple │
+ *           │ co-owners per land are first-class; one parcel can have  │
+ *           │ up to MAX_SHAREHOLDERS distinct holders summing to       │
+ *           │ TOTAL_SHARES (10,000). Layer-2 operations never mint,    │
+ *           │ never burn, and never modify the NFT — they only update  │
+ *           │ the share ledger.                                         │
+ *           │                                                           │
+ *           │ Layer-2 state:   _shareholders, _shareBps,                │
+ *           │                  _shareholderIndex, _ownerToLands,        │
+ *           │                  _ownerLandIndex, _ownershipHistory,      │
+ *           │                  _listings, _inheritanceRequests,         │
+ *           │                  _pendingWithdrawals                      │
+ *           │ Layer-2 reads:   getShareholders, getShareholdersWithBps, │
+ *           │                  getShareBps, getTotalShares,             │
+ *           │                  getOwnershipSnapshot,                    │
+ *           │                  getOwnershipHistory                      │
+ *           │ Layer-2 writes:  transferShare, buyShare,                 │
+ *           │                  initiateInheritance + approve/dispute,   │
+ *           │                  _executeInheritance, withdrawProceeds    │
+ *           └──────────────────────────────────────────────────────────┘
+ *
+ *         WHY ERC-721 ALONE IS INSUFFICIENT FOR LAND
+ *         -----------------------------------------------------------------
+ *         ERC-721's data model is "one owner per tokenId". For digital
+ *         collectibles that's fine. For real-world land it is wrong:
+ *
+ *           • Real parcels routinely have multiple legal co-owners
+ *             (spouses, siblings, business partners). ERC-721 cannot
+ *             express this without minting a separate NFT per fraction
+ *             (which destroys identity continuity) or piping every
+ *             transfer through a wrapper contract (which still squeezes
+ *             multi-owner state through a single-owner interface).
+ *           • Inheritance creates new owners WITHOUT physical
+ *             subdivision. ERC-721 has no native way to redistribute
+ *             ownership while keeping the tokenId stable.
+ *           • Partial sales of an ownership stake (e.g., selling 30%
+ *             of a plot) are common in real markets and impossible to
+ *             express in plain ERC-721 without minting fractional
+ *             children.
+ *           • The "who legally owns this parcel" answer is in many
+ *             jurisdictions a list with shares, not a single address.
+ *
+ *         v7 therefore uses ERC-721 ONLY for layer-1 identity and keeps
+ *         layer-2 ownership in a purpose-built basis-point share ledger.
+ *
+ *         WHY OWNERSHIP REDISTRIBUTION DIFFERS FROM SUBDIVISION
+ *         -----------------------------------------------------------------
+ *         Ownership redistribution (`transferShare`, `buyShare`,
+ *         `_executeInheritance`) is a LAYER-2 operation. The NFT does
+ *         not move, the tokenId does not change, the IPFS metadata does
+ *         not change. Only the entries in the share ledger change. A
+ *         buyer can acquire 30% of a plot from one of five co-owners
+ *         and the plot remains physically one piece of land.
+ *
+ *         Subdivision (`proposeSubdivision` → `_executeSubdivision`) is
+ *         a LAYER-1 operation. It MODELS the legal/physical creation of
+ *         NEW PARCELS where one used to be. The parent NFT is BURNED
+ *         (status → SUBDIVIDED, terminal) and N fresh NFTs are MINTED
+ *         with brand-new tokenIds, IPFS metadata, and share ledgers.
+ *         This must be authorised by a court order (`courtOrderCid`
+ *         required at proposal) because in the real world only a court
+ *         + survey + planning approval can create new land parcels.
+ *
+ *         CRITICAL DISTINCTIONS (audit comprehension, continued)
  *         -----------------------------------------------------------------
  *         (A) NFT identity vs. legal ownership.
  *             The ERC-721 NFT for each land is IDENTITY ONLY. The NFT is
@@ -386,6 +484,34 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         uint64 endTime;
         string termsCid; // IPFS CID for the full lease/agreement document
         bool isRevoked;
+    }
+
+    // ---- View-only structs (returned by helper getters; not stored) --------
+
+    /// @notice Layer-1 (identity) projection of a land. Returned by
+    ///         `getLandIdentity` so frontends can grab the immutable +
+    ///         lifecycle fields with the deterministic `tokenId` already
+    ///         derived — no separate keccak call needed.
+    struct LandIdentity {
+        string landId;
+        string ipfsHash;
+        LandType landType;
+        LandStatus status;
+        uint64 proposedAt;
+        uint64 verifiedAt;
+        uint256 tokenId;
+    }
+
+    /// @notice Layer-2 (ownership ledger) snapshot. Single-call read of the
+    ///         shareholder list, their bps, the runtime sum, and the count.
+    ///         For an ACTIVE land `totalShareBps` should equal TOTAL_SHARES;
+    ///         exposing it as a derived field gives integrators an explicit
+    ///         invariant assertion target.
+    struct OwnershipSnapshot {
+        address[] holders;
+        uint16[] shares;
+        uint16 totalShareBps;
+        uint256 shareholderCount;
     }
 
     // ========================================================================
@@ -878,8 +1004,14 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // ------------------------------------------------------------------------
 
     /**
-     * @notice Transfer `shareBps` of caller's share on `landId` to
-     *         `recipient`. To transfer 100% pass `shareBps = 10000`.
+     * @notice **LAYER-2 OP** — transfer `shareBps` of caller's share on
+     *         `landId` to `recipient`. To transfer 100% pass `shareBps = 10000`.
+     *
+     * @dev    Only the ownership ledger changes. The NFT is untouched —
+     *         same tokenId, same custody (still held by this contract),
+     *         same IPFS metadata. This is the textbook example of why
+     *         layer-2 operations exist: a buyer can acquire 30% of a
+     *         five-owner parcel without any NFT-level event firing.
      */
     function transferShare(
         string calldata landId,
@@ -967,9 +1099,14 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     }
 
     /**
-     * @notice Atomic purchase of `seller`'s listed share. `maxPrice`
-     *         protects the buyer from seller-side front-running.
+     * @notice **LAYER-2 OP** — atomic purchase of `seller`'s listed share.
+     *         `maxPrice` protects the buyer from seller-side front-running.
      *         Proceeds are credited to seller's pull-payment balance.
+     *
+     * @dev    Like `transferShare`, this is a layer-2-only operation: the
+     *         NFT does not move, the tokenId does not change. Only the
+     *         share ledger entries for `seller` and `msg.sender` are
+     *         updated, and `_pendingWithdrawals[seller]` is credited.
      */
     function buyShare(
         string calldata landId,
@@ -1036,6 +1173,15 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // 12.f Inheritance (redistributes shares; never mints)
     // ------------------------------------------------------------------------
 
+    /**
+     * @notice **LAYER-2 OP** — opens an inheritance proposal that
+     *         redistributes the deceased holder's basis points across
+     *         heirs. **No NFT mint, no NFT burn, no tokenId change.**
+     *         This is the canonical worked example of why layer-2 exists:
+     *         heirs become co-owners of the SAME parcel; the off-chain
+     *         physical land does not subdivide just because someone died.
+     *         For deliberate physical subdivision use `proposeSubdivision`.
+     */
     function initiateInheritance(
         string calldata landId,
         address deceasedHolder,
@@ -1135,8 +1281,10 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // ------------------------------------------------------------------------
 
     /**
-     * @notice Open a legal-subdivision proposal: burn the parent and
-     *         mint N new lands, each with its own share ledger.
+     * @notice **LAYER-1 OP** — open a legal-subdivision proposal that
+     *         BURNS the parent NFT and MINTS N new NFTs, each with its
+     *         own fresh share ledger. The ONLY operation in the contract
+     *         that creates new land NFTs after initial import.
      *
      * @dev    SECURITY / GOVERNANCE
      *         --------------------------------------------------------
@@ -1738,6 +1886,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         return string(abi.encodePacked("ipfs://", _landRecords[landId].ipfsHash));
     }
 
+    // === LAYER 1 (identity) + LAYER 2 (ownership) — combined / legacy views ==
     // Land + share views -----------------------------------------------------
     function getLandRecord(string calldata landId) external view returns (LandRecord memory) {
         return _landRecords[landId];
@@ -1780,6 +1929,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         }
     }
 
+    // === LAYER 1 — import / verification phase views ========================
     // Import views -----------------------------------------------------------
     function getImportProposal(
         string calldata landId
@@ -1880,6 +2030,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         isExpired = (p.verificationDeadline != 0 && block.timestamp > p.verificationDeadline);
     }
 
+    // === LAYER 2 — marketplace + history views ==============================
     // Marketplace views ------------------------------------------------------
     function getListing(string calldata landId, address seller) external view returns (Listing memory) {
         return _listings[landId][seller];
@@ -1890,6 +2041,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         return _ownershipHistory[landId];
     }
 
+    // === LAYER 2 — inheritance views (redistributes shares, no NFT change) ===
     // Inheritance views ------------------------------------------------------
     function getInheritanceRequest(
         string calldata landId
@@ -1922,6 +2074,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         return _heirApproved[landId][_inheritanceRequests[landId].proposalNonce][heir];
     }
 
+    // === LAYER 1 — subdivision views (burns parent NFT, mints children) =====
     // Subdivision views ------------------------------------------------------
     function getSubdivisionPlan(
         string calldata parentLandId
@@ -1964,6 +2117,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         return _subdivisionApproved[parentLandId][_subdivisionPlans[parentLandId].proposalNonce][shareholder];
     }
 
+    // === SEPARATE LEDGER — occupancy / use-right (NOT layer-2 ownership) ====
     // Occupancy views --------------------------------------------------------
     function getOccupancyAgreements(string calldata landId) external view returns (OccupancyAgreement[] memory) {
         return _occupancyAgreements[landId];
@@ -2026,6 +2180,99 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
             }
         }
         return (results, cursor + size);
+    }
+
+    // ---- Two-layer projection views ----------------------------------------
+
+    /**
+     * @notice LAYER-1 projection: pure land-identity fields plus the
+     *         deterministic ERC-721 tokenId. Returns the immutable
+     *         identity (landId, ipfsHash, landType, proposedAt) together
+     *         with the current lifecycle status — but NO ownership-ledger
+     *         data. Pair with `getOwnershipSnapshot` for the layer-2 view.
+     */
+    function getLandIdentity(string calldata landId) external view returns (LandIdentity memory) {
+        LandRecord storage r = _landRecords[landId];
+        return
+            LandIdentity({
+                landId: r.landId,
+                ipfsHash: r.ipfsHash,
+                landType: r.landType,
+                status: r.status,
+                proposedAt: r.proposedAt,
+                verifiedAt: r.verifiedAt,
+                tokenId: getTokenIdFromLandId(landId)
+            });
+    }
+
+    /**
+     * @notice LAYER-2 projection: a one-shot read of the ownership ledger
+     *         for `landId`. Returns the shareholder list, parallel bps
+     *         array, the runtime sum (should be TOTAL_SHARES for an
+     *         ACTIVE land), and the count. Indexers and dashboards use
+     *         this instead of three separate calls.
+     */
+    function getOwnershipSnapshot(
+        string calldata landId
+    ) external view returns (OwnershipSnapshot memory snap) {
+        address[] memory holders = _shareholders[landId];
+        uint256 n = holders.length;
+        uint16[] memory shares = new uint16[](n);
+        uint16 total;
+        for (uint256 i = 0; i < n; ) {
+            uint16 s = _shareBps[landId][holders[i]];
+            shares[i] = s;
+            total += s;
+            unchecked {
+                ++i;
+            }
+        }
+        snap = OwnershipSnapshot({
+            holders: holders,
+            shares: shares,
+            totalShareBps: total,
+            shareholderCount: n
+        });
+    }
+
+    /**
+     * @notice Combined view returning BOTH layers in a single RPC. Useful
+     *         for the land-detail page which needs identity + ownership
+     *         together. Equivalent to calling `getLandIdentity` and
+     *         `getOwnershipSnapshot` separately, but cheaper for the caller.
+     */
+    function getLandFullView(
+        string calldata landId
+    ) external view returns (LandIdentity memory identity, OwnershipSnapshot memory ownership) {
+        LandRecord storage r = _landRecords[landId];
+        identity = LandIdentity({
+            landId: r.landId,
+            ipfsHash: r.ipfsHash,
+            landType: r.landType,
+            status: r.status,
+            proposedAt: r.proposedAt,
+            verifiedAt: r.verifiedAt,
+            tokenId: getTokenIdFromLandId(landId)
+        });
+
+        address[] memory holders = _shareholders[landId];
+        uint256 n = holders.length;
+        uint16[] memory shares = new uint16[](n);
+        uint16 total;
+        for (uint256 i = 0; i < n; ) {
+            uint16 s = _shareBps[landId][holders[i]];
+            shares[i] = s;
+            total += s;
+            unchecked {
+                ++i;
+            }
+        }
+        ownership = OwnershipSnapshot({
+            holders: holders,
+            shares: shares,
+            totalShareBps: total,
+            shareholderCount: n
+        });
     }
 
     /// @dev Required override when combining ERC721 + AccessControl.
