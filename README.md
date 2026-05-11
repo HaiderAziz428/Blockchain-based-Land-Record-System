@@ -575,6 +575,58 @@ The contract is organised as two **orthogonal** layers. Every state variable and
 
 The distinction matters because in the real world, "this parcel changed hands" and "this parcel was physically split" are completely different legal events. Conflating them produces wrong on-chain records.
 
+### ⚖️ Hybrid Inheritance Workflow (v7+)
+
+Inheritance is the workflow where the hybrid governance model matters most. **The contract deliberately does NOT calculate shares.** Pakistani succession law is layered (Muslim Family Laws Ordinance 1961, Succession Act 1925 for non-Muslims, plus customary law applied by family courts) and depends on facts a contract cannot know (religion of the deceased, family tree, the validity of any will, disclaimers, etc.). Encoding one interpretation into bytecode would be both legally inappropriate and technically fragile.
+
+Instead, courts compute shares off-chain; the contract enforces the court's decision.
+
+**Four-phase flow:**
+
+```
+1. APPEAL        Heir / lawyer calls fileInheritanceAppeal(landId,
+   (on-chain)    deceasedHolder, courtOrderCid).
+                 → Returns appealId. Public-record event.
+                 → Does NOT change land status.
+
+2. OFF-CHAIN     Backend reads InheritanceAppealFiled event, verifies
+   VERIFICATION  the court order's legal authenticity (signatures,
+                 jurisdiction, judge identity, registry stamps).
+                 → If invalid, backend ignores it. The appeal lives
+                   on-chain forever as "filed but not actioned".
+                 → If valid, backend prepares the heirs[] + heirShares[]
+                   arrays per the court order.
+
+3. PROPOSAL      Backend calls initiateInheritance(landId, deceased,
+   (on-chain)    heirs[], heirShares[], courtOrderCid, appealId).
+                 → Status becomes PENDING_INHERITANCE.
+                 → sharesHash = keccak256(heirs, shares, courtOrderCid)
+                   is locked into the proposal. Cannot be silently
+                   edited.
+                 → 30-day votingDeadline starts.
+                 → Linked appeal marked isProcessed = true.
+
+4. CONSENSUS     Each heir calls approveSuccessionPlan OR
+   (on-chain)    disputeSuccessionPlan. Heirs can only approve/dispute;
+                 they cannot edit percentages.
+                 → All approve → auto-execute (deceased's bps → heirs).
+                 → Any dispute → status LOCKED_INHERITANCE_DISPUTE.
+                   Arbiter resolves with a fresh court-order CID.
+                 → Deadline elapses → expireInheritance resets to ACTIVE.
+```
+
+**Why this design is secure:**
+
+| Concern | Mitigation |
+|---|---|
+| Backend secretly finalises | Cannot — `_executeInheritance` only runs when every named heir has approved (or the arbiter force-resolves with a court CID, which itself is an audit-logged event). |
+| Backend silently swaps heir shares under the same court order | Detectable — `sharesHash = keccak256(heirs, shares, courtCid)` is committed at proposal time. Auditors call `computeSharesHash` off-chain and compare. |
+| Heirs collude to rewrite the split | Impossible — heirs have no edit primitive; they can only `approve` or `dispute`. A dispute forces the case back into court. |
+| Replay attacks across re-proposed plans | Vote state is keyed by `(landId, proposalNonce, heir)`. Every re-proposal bumps the nonce → fresh slots, stale votes inert. |
+| Stuck proposal (one heir disappears) | Auto-expires after `INHERITANCE_VOTING_DURATION = 30 days`. Anyone may call `expireInheritance` to reset. |
+| Hardcoded religious law | None — the contract has no notion of Muslim/non-Muslim split. It enforces whatever the court ordered, period. |
+| One-NFT-per-heir subdivision | Forbidden — inheritance is layer-2 only. The tokenId is invariant. Heirs become co-shareholders of the same parcel. If they want physical division, that's a separate court-anchored `proposeSubdivision`. |
+
 ### 🧮 The Fractional Ownership Model (carried from v6)
 
 ### 🧮 The Fractional Ownership Model
@@ -653,7 +705,7 @@ The system intentionally consolidates all logic into a single contract to minimi
 | **Share Ledger** | `transferShare`, `getShareholders`, `getShareholdersWithBps`, `getShareBps`, `getTotalShares` |
 | **Marketplace** _(per-share, per-seller)_ | `listShareForSale`, `updateListingPrice` _(decrease-only)_, `buyShare(landId, seller, maxPrice)`, `cancelListing`, `getListing(landId, seller)` |
 | **Escrow** | `withdrawProceeds`, `pendingProceeds`, `totalPendingWithdrawals` — pull-payment ledger |
-| **Inheritance** _(redistributes shares, never mints)_ | `initiateInheritance`, `approveSuccessionPlan`, `disputeSuccessionPlan`, `resolveInheritanceDispute`, `getInheritanceRequest`, `hasHeirApproved` |
+| **Inheritance** _(heir-appeal → oracle-proposal → vote → execute; redistributes shares, never mints)_ | `fileInheritanceAppeal` _(new)_, `initiateInheritance(.., courtOrderCid, appealId)`, `approveSuccessionPlan`, `disputeSuccessionPlan`, `expireInheritance` _(new)_, `resolveInheritanceDispute`, `getInheritanceRequest`, `getInheritanceAppeal`, `getInheritanceAppealsForLand`, `hasHeirApproved`, `computeSharesHash` _(pure helper)_ |
 | **Legal Subdivision** _(v7)_ | `proposeSubdivision`, `approveSubdivision`, `disputeSubdivision`, `resolveSubdivisionDispute`, `getSubdivisionPlan`, `getSubdivisionPart`, `hasShareholderApprovedSubdivision` |
 | **Occupancy / Use-right** _(v7)_ | `grantOccupancy`, `revokeOccupancy`, `getOccupancyAgreements`, `getOccupancyAgreement` |
 | **Indexing** | `_allLandIds`, `_ownerToLands`, `getAllLandRecordsPaginated`, `getLandsByOwner`, `getLandsByCnic`, `totalLandRecords` |
@@ -678,9 +730,11 @@ The system intentionally consolidates all logic into a single contract to minimi
 | `buyShare(landId, seller, maxPrice)` | Registered or Govt-Authority Buyer | `whenNotPaused`, `nonReentrant`, `landMustExist`, `onlyActive`, `payable` | Atomic purchase of `seller`'s listed share; refunds excess; credits seller via escrow |
 | `withdrawProceeds()` | Any seller with balance | `nonReentrant` _(NOT whenNotPaused)_ | Pull-payment claim of accumulated sale proceeds |
 | `cancelListing(landId)` | Seller | `whenNotPaused` | Removes caller's listing |
-| `initiateInheritance(landId, deceasedHolder, heirs[], heirShares[])` | Oracle | `onlyRole(INHERITANCE_ORACLE_ROLE)`, `whenNotPaused`, `landMustExist`, `onlyActive` | Redistributes `deceasedHolder`'s bps across heirs (sum check enforced) |
-| `approveSuccessionPlan(landId)` | Heir | `whenNotPaused`, `nonReentrant` | Vote yes; auto-executes at 100% |
-| `disputeSuccessionPlan(landId)` | Heir | `whenNotPaused` | Locks → `LOCKED_INHERITANCE_DISPUTE` |
+| **`fileInheritanceAppeal(landId, deceasedHolder, courtOrderCid)`** _(new — heir-initiated)_ | Any registered citizen | `whenNotPaused`, `boundedString`, `landMustExist`, `onlyActive` | Public-record appeal that an inheritance is in progress, citing the court-order CID. Returns `appealId`. Does NOT change land status — the oracle decides off-chain whether to act. |
+| `initiateInheritance(landId, deceasedHolder, heirs[], heirShares[], **courtOrderCid**, **appealId**)` _(v7+ signature)_ | Oracle | `onlyRole(INHERITANCE_ORACLE_ROLE)`, `whenNotPaused`, `boundedString`, `landMustExist`, `onlyActive` | Files an IMMUTABLE proposal. `courtOrderCid` is now REQUIRED at proposal time and committed into `sharesHash = keccak256(abi.encode(heirs, heirShares, courtOrderCid))`. 30-day `votingDeadline` set. |
+| `approveSuccessionPlan(landId)` | Heir | `whenNotPaused`, `nonReentrant` | Vote yes; reverts after `votingDeadline`; auto-executes at 100% |
+| `disputeSuccessionPlan(landId)` | Heir | `whenNotPaused` | Locks → `LOCKED_INHERITANCE_DISPUTE` (freezes the deadline) |
+| **`expireInheritance(landId)`** _(new — public utility)_ | Anyone | `whenNotPaused` | After `votingDeadline` elapses, resets status to `ACTIVE` so the oracle can re-propose. proposalNonce preserved → fresh vote slots on the next proposal. |
 | **`resolveInheritanceDispute(landId, force, courtOrderCid)`** _(v7 — renamed + court CID)_ | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `nonReentrant`, `boundedString` | Force-execute (with court CID) or cancel |
 | **`proposeSubdivision(parentLandId, newLandIds[], newIpfsHashes[], newLandShareholders[][], newLandShares[][], courtOrderCid)`** _(v7)_ | Subdivision Oracle | `onlyRole(SUBDIVISION_ORACLE_ROLE)`, `whenNotPaused`, `landMustExist`, `onlyActive`, `boundedString` | Files a legal-subdivision plan (each child land's shares must sum to 10,000) |
 | **`approveSubdivision(parentLandId)`** _(v7)_ | Parent shareholder | `whenNotPaused`, `nonReentrant` | Vote yes; auto-executes when ALL current shareholders approve |
@@ -1380,6 +1434,7 @@ flowchart LR
 | 18 | **v6 still treated the backend as a unilateral oracle**: `storeVerifiedLandRecord` minted the NFT immediately on the backend's say-so, with no on-chain check that the proposed co-owners agreed with the imported share split. A corrupt or erroneous backend could silently mint to wrong owners. The model also had no on-chain workflow for *deliberate* legal subdivision (when heirs actually do want separate plots) and no on-chain expression of occupancy / use-rights distinct from ownership. | **v7 hybrid-governance refactor:** Pakistani land governance is explicitly modelled as hybrid (chain holds identity; courts, the developer registry, and proposed owners themselves hold legal authority). Three changes anchor this: (a) **Land import is two-phase** — `proposeLandImport` files a record with proposed co-owners and shares; each owner calls `verifyLandImport`; the NFT mints + share ledger populates only after ALL verify. (b) **Legal subdivision is a first-class workflow** — `SUBDIVISION_ORACLE_ROLE` files a court-anchored plan with per-child shareholder/share allocations; ALL current shareholders must approve; on execution the parent NFT is burned (status → `SUBDIVIDED`, terminal) and N new child NFTs are minted with their own share ledgers. (c) **Occupancy / use-right agreements** are a separate ledger from ownership — any shareholder can grant a time-bound right of use to a non-owner; does NOT affect the share ledger. Every dispute-arbiter override now requires a `courtOrderCid` (IPFS) — every legal-authority override is publicly auditable. `BACKEND_ROLE` further split into `MINTER` / `INHERITANCE_ORACLE` / `SUBDIVISION_ORACLE` / `DISPUTE_ARBITER` for tightest least-privilege. Eight-state lifecycle. |
 | 19 | **v7 import flow could be stuck indefinitely** — without a deadline, a single non-responding proposed owner could permanently park a `landId` in the verification phase, blocking any subsequent re-import of the same parcel. The status name `PROPOSED` also under-communicated the consent-pending semantics to off-chain integrators. The audit panel had no atomic "show me everyone still owing a verification" view. | **v7 verification refinements:** (a) renamed `LandStatus.PROPOSED` → `LandStatus.PENDING_VERIFICATION` for clarity; (b) added `VERIFICATION_DURATION = 90 days` and stored `verificationDeadline` on every `ImportProposal`; `verifyLandImport` now reverts if past deadline; (c) added `expireLandImport(landId)` — public utility callable by anyone after the deadline elapses, deletes the shell so the `landId` is free for re-import; (d) emitted `verificationCount` / `ownersTotal` in `LandImportVerified` and `verificationDeadline` in `LandImportProposed` for indexers; (e) added `getPendingVerifiers(landId)` and `getVerificationStatus(landId)` views for the verification dashboard; (f) strengthened NatSpec under "WHY OWNER CONSENSUS IS NECESSARY", "WHY BACKEND AUTHORITY IS INTENTIONALLY LIMITED", and "WHY MINTING ONLY AFTER VERIFICATION". |
 | 20 | **The two-layer architecture (identity vs. ownership) was implicit** — the rationale lived only in spread-out NatSpec snippets, and there were no first-class projection views that exposed each layer separately. Integrators conflated `ownerOf(tokenId)` (which returns `address(this)` because the NFT is self-custodial) with legal ownership, even though legal ownership lives entirely in the share ledger. | **Identity / ownership separation made explicit.** Contract preamble gained a dedicated `TWO-LAYER ARCHITECTURE` block plus matching `WHY ERC-721 ALONE IS INSUFFICIENT FOR LAND` and `WHY OWNERSHIP REDISTRIBUTION DIFFERS FROM SUBDIVISION` sections. Section headers in the body now carry explicit `LAYER 1` / `LAYER 2` labels. New view-only structs: `LandIdentity` (pure layer-1 fields + derived `tokenId`) and `OwnershipSnapshot` (shareholders + shares + total + count). New external views: `getLandIdentity`, `getOwnershipSnapshot`, `getLandFullView` (both layers in one RPC). Key external functions (`transferShare`, `buyShare`, `initiateInheritance`, `proposeSubdivision`) now open with explicit `**LAYER-1 OP**` / `**LAYER-2 OP**` NatSpec tags so the reviewer always knows which layer a function mutates. No behavioural change — purely architectural-clarity refactor. |
+| 21 | **v7 inheritance was missing the heir-initiated step and lacked a court-anchored commitment hash.** The oracle could call `initiateInheritance` without referencing any on-chain appeal, so the audit trail had no "this was triggered by an heir filing X court order" anchor. The court-order CID was only added at force-resolve, so an indexer couldn't prove that a proposal's heir-share array matched a specific court order; a malicious oracle could re-propose with the same court order but different shares and the on-chain record would be ambiguous. There was also no voting deadline — a single non-responding heir could park a land in `PENDING_INHERITANCE` indefinitely. | **Hybrid inheritance workflow.** Added the heir-initiated appeal phase: `fileInheritanceAppeal(landId, deceasedHolder, courtOrderCid)` is callable by any registered citizen and emits `InheritanceAppealFiled` for backend pickup. Modified `initiateInheritance` to REQUIRE `courtOrderCid` and a (possibly zero) `appealId` at proposal time. Added `sharesHash = keccak256(abi.encode(heirs, heirShares, courtOrderCid))` committed into the proposal — auditors call new pure helper `computeSharesHash` and compare. Added `INHERITANCE_VOTING_DURATION = 30 days` + `votingDeadline` on every proposal; `approveSuccessionPlan` reverts after deadline; new `expireInheritance(landId)` public utility resets to `ACTIVE`. New events: `InheritanceAppealFiled`, `InheritanceExpired`; `InheritanceInitiated` now carries court CID, appealId, sharesHash, deadline. New views: `getInheritanceAppeal`, `getInheritanceAppealsForLand`, `totalInheritanceAppeals`. Contract preamble gained four new sections explaining: **why inheritance cannot realistically be fully decentralised**, **why courts calculate shares off-chain**, **why heirs only approve/dispute**, **why immutable proposals improve security**. |
 
 ---
 

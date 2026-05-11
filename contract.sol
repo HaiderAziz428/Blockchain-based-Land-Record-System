@@ -75,6 +75,11 @@ error LandRegistry__InheritanceNotDisputed(string landId);
 error LandRegistry__PlanAlreadyExecuted(string landId);
 error LandRegistry__AlreadyVoted();
 error LandRegistry__NotAnHeir(address caller);
+error LandRegistry__InheritanceVotingExpired(string landId, uint64 deadline);
+error LandRegistry__InheritanceVotingNotExpired(string landId, uint64 deadline);
+error LandRegistry__InvalidAppealId(uint256 appealId);
+error LandRegistry__AppealLandMismatch(uint256 appealId, string expected, string got);
+error LandRegistry__AppealAlreadyProcessed(uint256 appealId);
 
 // Subdivision
 error LandRegistry__InvalidSubdivisionCount();
@@ -446,9 +451,44 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         uint256 price; // 0 for non-sale events
     }
 
+    /// @notice Heir-initiated appeal — the legal trigger that asks the
+    ///         off-chain backend / court to begin processing a succession.
+    ///         Filing an appeal does NOT change land status; it only logs
+    ///         the legal request on-chain so the audit trail is complete.
+    ///
+    /// @dev    The off-chain flow is:
+    ///           heir → files appeal w/ court order CID → backend reads
+    ///           the event → backend verifies the court order off-chain
+    ///           (signatures, judge identity, jurisdiction, etc.) → if
+    ///           valid, the backend (INHERITANCE_ORACLE_ROLE) calls
+    ///           `initiateInheritance` referencing the appeal id.
+    ///         The backend can also reject the appeal off-chain — in that
+    ///         case `isProcessed` simply remains `false` and the appeal
+    ///         lives on-chain forever as a "filed but not actioned" record.
+    struct InheritanceAppeal {
+        uint256 id;
+        string landId;
+        address deceasedHolder;
+        address filer;
+        string courtOrderCid;
+        uint64 filedAt;
+        bool isProcessed;
+    }
+
     /// @notice Inheritance redistributes ONE deceased shareholder's bps
     ///         across heirs. The land NFT does NOT move and other
     ///         shareholders are untouched.
+    ///
+    /// @dev    AUDIT-CRITICAL: `courtOrderCid` is set at PROPOSAL time
+    ///         (not at force-resolve) and is locked together with
+    ///         `heirs[]` and `heirShares[]` via `sharesHash =
+    ///         keccak256(abi.encode(heirs, heirShares, courtOrderCid))`.
+    ///         An indexer / auditor can recompute the hash and compare
+    ///         against `sharesHash` to PROVE that the on-chain shares
+    ///         haven't been silently swapped under the same court order.
+    ///         `votingDeadline = proposedAt + INHERITANCE_VOTING_DURATION`
+    ///         caps the approval window; after expiry anyone may call
+    ///         `expireInheritance` to reset status to ACTIVE.
     struct InheritanceRequest {
         address deceasedHolder;
         address[] heirs;
@@ -456,7 +496,10 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         uint256 approvalCount;
         bool isExecuted;
         uint256 proposalNonce;
-        string courtOrderCid; // populated by arbiter on force-resolve
+        string courtOrderCid; // REQUIRED at proposal time (v7+ inheritance)
+        uint256 appealId; // 0 if not linked to a specific appeal record
+        bytes32 sharesHash; // commits heirs + shares + court CID together
+        uint64 votingDeadline;
     }
 
     /// @notice Legal subdivision plan. Burns the parent NFT and mints N
@@ -536,6 +579,12 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     ///         expiry, anyone may call `expireLandImport` to free the
     ///         landId — no shareholder can be silently stuck.
     uint64 public constant VERIFICATION_DURATION = 90 days;
+    /// @notice Window in which all heirs must vote on an inheritance
+    ///         proposal. Shorter than the import window because by the
+    ///         time the court has issued an order, the heirs are already
+    ///         identified and aware. After this deadline anyone may call
+    ///         `expireInheritance` and the proposal returns to ACTIVE.
+    uint64 public constant INHERITANCE_VOTING_DURATION = 30 days;
     uint256 public constant MAX_HEIRS = 50;
     uint256 public constant MAX_SHAREHOLDERS = 100;
     uint256 public constant MAX_SUBDIVISIONS_PER_PROPOSAL = 20;
@@ -577,6 +626,18 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     mapping(string => InheritanceRequest) private _inheritanceRequests;
     mapping(string => mapping(uint256 => mapping(address => bool))) private _heirApproved;
     mapping(string => mapping(uint256 => mapping(address => bool))) private _isHeirFor;
+
+    // --- Inheritance appeals (heir-initiated; v7+ inheritance workflow) -----
+    //
+    // SECURITY: appeals are public information events filed by anyone
+    // (typically a known heir or their lawyer). They DO NOT change land
+    // status. Only the off-chain backend, after legal-authenticity
+    // checks, may act on an appeal by calling `initiateInheritance`.
+    // This separation prevents random callers from putting a land into
+    // PENDING_INHERITANCE.
+    mapping(uint256 => InheritanceAppeal) private _inheritanceAppeals;
+    mapping(string => uint256[]) private _appealsByLand;
+    uint256 private _nextAppealId;
 
     // --- Subdivision (v7) ---------------------------------------------------
     mapping(string => SubdivisionPlan) private _subdivisionPlans;
@@ -658,16 +719,28 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     event ProceedsWithdrawn(address indexed seller, uint256 amount);
 
     // Inheritance ------------------------------------------------------------
+    event InheritanceAppealFiled(
+        uint256 indexed appealId,
+        string indexed landId,
+        address indexed filer,
+        address deceasedHolder,
+        string courtOrderCid
+    );
     event InheritanceInitiated(
         string indexed landId,
         address indexed deceasedHolder,
         uint256 totalHeirs,
         uint16 deceasedShareBps,
-        uint256 proposalNonce
+        uint256 proposalNonce,
+        string courtOrderCid,
+        uint256 appealId,
+        bytes32 sharesHash,
+        uint64 votingDeadline
     );
     event HeirApproved(string indexed landId, address indexed heir, uint256 proposalNonce);
     event InheritanceDisputed(string indexed landId, address indexed heir, uint256 proposalNonce);
     event InheritanceFinalized(string indexed landId, uint256 proposalNonce);
+    event InheritanceExpired(string indexed landId, uint256 proposalNonce, uint64 deadline);
     event InheritanceDisputeResolved(string indexed landId, bool forceExecuted, string courtOrderCid);
 
     // Subdivision (v7) -------------------------------------------------------
@@ -1170,34 +1243,168 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     }
 
     // ------------------------------------------------------------------------
-    // 12.f Inheritance (redistributes shares; never mints)
+    // 12.f Inheritance (heir-initiated appeal → oracle-filed proposal →
+    //                    heir approve/dispute → execute / arbiter override)
+    //
+    // WHY INHERITANCE CANNOT REALISTICALLY BE FULLY DECENTRALISED
+    // -----------------------------------------------------------------
+    // Pakistani inheritance is governed by a layered legal framework
+    // (the Muslim Family Laws Ordinance 1961, the Succession Act 1925
+    // for non-Muslims, plus customary law applied by family courts).
+    // The share each heir receives depends on:
+    //   • which legal regime applies (religion of the deceased)
+    //   • family tree facts (does the deceased have surviving parents?
+    //     spouse? children of what gender? grandchildren via predeceased
+    //     children?)
+    //   • whether there is a registered will and whether it is valid
+    //   • whether any heir disclaims, dies during proceedings, etc.
+    // None of these can be computed on-chain without enshrining a
+    // specific legal interpretation into the contract code — which is
+    // both legally inappropriate (a contract is not a court) and
+    // technically fragile (every law change breaks the contract).
+    //
+    // WHY COURTS CALCULATE SHARES OFF-CHAIN
+    // -----------------------------------------------------------------
+    // Family / civil courts compute the heirShares array off-chain and
+    // issue a signed succession order. The order is pinned to IPFS;
+    // its CID is the legal-authority anchor that the on-chain contract
+    // commits to. The on-chain logic then ENFORCES the redistribution
+    // exactly as ordered — no more, no less.
+    //
+    // WHY HEIRS ONLY APPROVE OR DISPUTE
+    // -----------------------------------------------------------------
+    // Heirs cannot edit the heirShares array. If they could, a majority
+    // could collude to silently rewrite the court-ordered split before
+    // execution. Their only on-chain power is to:
+    //   • approve the proposal as filed (drives toward execution), or
+    //   • dispute it (freezes the proposal until the arbiter resolves).
+    // This forces any disagreement back into the legal system, which
+    // is the appropriate venue for it.
+    //
+    // WHY IMMUTABLE PROPOSALS IMPROVE SECURITY
+    // -----------------------------------------------------------------
+    // Once `initiateInheritance` files a proposal, the heirs[],
+    // heirShares[], courtOrderCid, and resulting `sharesHash` are
+    // immutable for that proposalNonce. The backend cannot
+    // re-edit them in place. To change anything, the backend must let
+    // the proposal expire (or all heirs reject by deadline) and file a
+    // FRESH proposal with a new nonce — and the new proposal must
+    // again survive the unanimous-vote window. Replay protection is
+    // built in: vote state is scoped to (landId, proposalNonce, heir),
+    // so the new proposal sees fresh vote slots.
     // ------------------------------------------------------------------------
 
     /**
-     * @notice **LAYER-2 OP** — opens an inheritance proposal that
-     *         redistributes the deceased holder's basis points across
-     *         heirs. **No NFT mint, no NFT burn, no tokenId change.**
-     *         This is the canonical worked example of why layer-2 exists:
-     *         heirs become co-owners of the SAME parcel; the off-chain
-     *         physical land does not subdivide just because someone died.
-     *         For deliberate physical subdivision use `proposeSubdivision`.
+     * @notice Heir-initiated step. Files a public-record appeal that an
+     *         inheritance is in progress for `landId` over `deceasedHolder`'s
+     *         share, citing the court-order CID. Anyone REGISTERED may
+     *         file — typically a known heir or their lawyer.
+     *
+     * @dev    Filing an appeal does NOT change land status. It only logs
+     *         the request on-chain so the audit trail is complete. The
+     *         off-chain backend reads the `InheritanceAppealFiled` event,
+     *         verifies the court order's legal authenticity off-chain
+     *         (signatures, jurisdiction, judge identity), and — if
+     *         valid — calls `initiateInheritance` referencing the
+     *         returned `appealId`.
+     *
+     *         Anti-spam: caller must be a registered citizen. Frivolous
+     *         appeals carry no on-chain effect; they're discarded by the
+     *         backend.
+     */
+    function fileInheritanceAppeal(
+        string calldata landId,
+        address deceasedHolder,
+        string calldata courtOrderCid
+    )
+        external
+        whenNotPaused
+        boundedString(courtOrderCid)
+        landMustExist(landId)
+        onlyActive(landId)
+        returns (uint256 appealId)
+    {
+        if (!_users[msg.sender].isRegistered) revert LandRegistry__NotAuthorizedHolder(msg.sender);
+        if (deceasedHolder == address(0)) revert LandRegistry__ZeroAddress();
+        if (_shareBps[landId][deceasedHolder] == 0) {
+            revert LandRegistry__DeceasedHasNoShares(deceasedHolder, landId);
+        }
+
+        unchecked {
+            ++_nextAppealId;
+        }
+        appealId = _nextAppealId;
+
+        _inheritanceAppeals[appealId] = InheritanceAppeal({
+            id: appealId,
+            landId: landId,
+            deceasedHolder: deceasedHolder,
+            filer: msg.sender,
+            courtOrderCid: courtOrderCid,
+            filedAt: uint64(block.timestamp),
+            isProcessed: false
+        });
+        _appealsByLand[landId].push(appealId);
+
+        emit InheritanceAppealFiled(appealId, landId, msg.sender, deceasedHolder, courtOrderCid);
+    }
+
+    /**
+     * @notice **LAYER-2 OP** — backend files an immutable inheritance
+     *         proposal after off-chain court-order verification.
+     *         Redistributes the deceased's basis points across heirs.
+     *         **No NFT mint, no NFT burn, no tokenId change.** Heirs
+     *         become co-owners of the SAME parcel; the off-chain physical
+     *         land does not subdivide. For deliberate physical subdivision
+     *         use `proposeSubdivision`.
+     *
+     * @param  courtOrderCid REQUIRED at proposal time. Pinned IPFS CID of
+     *                       the signed court order that authorises this
+     *                       redistribution. Committed into `sharesHash`
+     *                       so any silent edit to heirs/shares while the
+     *                       same CID is reused is provably detectable.
+     * @param  appealId      Optional reference to the heir-filed appeal
+     *                       that triggered this proposal (`0` if none).
+     *                       Marking the appeal as processed closes the
+     *                       audit loop from appeal → proposal.
+     *
+     * @dev    IMMUTABILITY: once this call returns, `heirs`, `heirShares`,
+     *         `courtOrderCid`, `sharesHash`, and `votingDeadline` cannot
+     *         be edited under the current `proposalNonce`. A new proposal
+     *         requires bumping the nonce — which gives fresh per-heir
+     *         vote slots and a fresh deadline.
      */
     function initiateInheritance(
         string calldata landId,
         address deceasedHolder,
         address[] calldata heirs,
-        uint16[] calldata heirShares
+        uint16[] calldata heirShares,
+        string calldata courtOrderCid,
+        uint256 appealId
     )
         external
         onlyRole(INHERITANCE_ORACLE_ROLE)
         whenNotPaused
+        boundedString(courtOrderCid)
         landMustExist(landId)
         onlyActive(landId)
     {
         _validateInheritanceInputs(landId, deceasedHolder, heirs, heirShares);
 
+        if (appealId != 0) {
+            InheritanceAppeal storage appeal = _inheritanceAppeals[appealId];
+            if (bytes(appeal.landId).length == 0) revert LandRegistry__InvalidAppealId(appealId);
+            if (keccak256(bytes(appeal.landId)) != keccak256(bytes(landId))) {
+                revert LandRegistry__AppealLandMismatch(appealId, appeal.landId, landId);
+            }
+            if (appeal.isProcessed) revert LandRegistry__AppealAlreadyProcessed(appealId);
+            appeal.isProcessed = true;
+        }
+
         InheritanceRequest storage req = _inheritanceRequests[landId];
         uint256 nonce = req.proposalNonce + 1;
+        uint64 deadline = uint64(block.timestamp) + INHERITANCE_VOTING_DURATION;
+        bytes32 sharesHash = keccak256(abi.encode(heirs, heirShares, courtOrderCid));
 
         req.deceasedHolder = deceasedHolder;
         req.heirs = heirs;
@@ -1205,7 +1412,10 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         req.approvalCount = 0;
         req.isExecuted = false;
         req.proposalNonce = nonce;
-        req.courtOrderCid = "";
+        req.courtOrderCid = courtOrderCid;
+        req.appealId = appealId;
+        req.sharesHash = sharesHash;
+        req.votingDeadline = deadline;
 
         uint256 n = heirs.length;
         for (uint256 i = 0; i < n; ) {
@@ -1216,16 +1426,43 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         }
 
         _landRecords[landId].status = LandStatus.PENDING_INHERITANCE;
-        emit InheritanceInitiated(landId, deceasedHolder, n, _shareBps[landId][deceasedHolder], nonce);
+        emit InheritanceInitiated(
+            landId,
+            deceasedHolder,
+            n,
+            _shareBps[landId][deceasedHolder],
+            nonce,
+            courtOrderCid,
+            appealId,
+            sharesHash,
+            deadline
+        );
         emit LandStatusChanged(landId, LandStatus.PENDING_INHERITANCE);
     }
 
+    /**
+     * @notice Heir votes yes on the standing proposal. The vote is
+     *         scoped to (landId, proposalNonce, heir) so a single vote
+     *         per heir per proposal is enforced — replay-safe across
+     *         re-issued proposals.
+     *
+     * @dev    SECURITY:
+     *         - `nonReentrant`: the last vote triggers
+     *           `_executeInheritance` which mutates share state and could
+     *           hit ERC-721 receiver hooks.
+     *         - Deadline check: votes are rejected after
+     *           `votingDeadline`. After expiry anyone may call
+     *           `expireInheritance` to reset status to ACTIVE.
+     */
     function approveSuccessionPlan(string calldata landId) external whenNotPaused nonReentrant {
         InheritanceRequest storage req = _inheritanceRequests[landId];
         if (_landRecords[landId].status != LandStatus.PENDING_INHERITANCE) {
             revert LandRegistry__NoPendingPlan(landId);
         }
         if (req.isExecuted) revert LandRegistry__PlanAlreadyExecuted(landId);
+        if (block.timestamp > req.votingDeadline) {
+            revert LandRegistry__InheritanceVotingExpired(landId, req.votingDeadline);
+        }
 
         uint256 nonce = req.proposalNonce;
         if (!_isHeirFor[landId][nonce][msg.sender]) revert LandRegistry__NotAnHeir(msg.sender);
@@ -1241,6 +1478,8 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         }
     }
 
+    /// @notice Single-heir veto — freezes the proposal until the arbiter
+    ///         resolves via `resolveInheritanceDispute` (with court CID).
     function disputeSuccessionPlan(string calldata landId) external whenNotPaused {
         InheritanceRequest storage req = _inheritanceRequests[landId];
         if (_landRecords[landId].status != LandStatus.PENDING_INHERITANCE) {
@@ -1251,6 +1490,31 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         _landRecords[landId].status = LandStatus.LOCKED_INHERITANCE_DISPUTE;
         emit InheritanceDisputed(landId, msg.sender, req.proposalNonce);
         emit LandStatusChanged(landId, LandStatus.LOCKED_INHERITANCE_DISPUTE);
+    }
+
+    /**
+     * @notice After the voting deadline has elapsed without unanimous
+     *         approval (and without dispute), anyone may reset the land
+     *         to ACTIVE so the backend can file a fresh proposal.
+     *
+     * @dev    Bounded by an on-chain timestamp; no role required. The
+     *         proposalNonce is preserved on the struct so the next
+     *         `initiateInheritance` increments it, giving fresh vote
+     *         state. Does NOT touch share state.
+     */
+    function expireInheritance(string calldata landId) external whenNotPaused {
+        LandRecord storage record = _landRecords[landId];
+        if (record.status != LandStatus.PENDING_INHERITANCE) {
+            revert LandRegistry__NoPendingPlan(landId);
+        }
+        InheritanceRequest storage req = _inheritanceRequests[landId];
+        if (block.timestamp <= req.votingDeadline) {
+            revert LandRegistry__InheritanceVotingNotExpired(landId, req.votingDeadline);
+        }
+
+        record.status = LandStatus.ACTIVE;
+        emit InheritanceExpired(landId, req.proposalNonce, req.votingDeadline);
+        emit LandStatusChanged(landId, LandStatus.ACTIVE);
     }
 
     /**
@@ -2055,7 +2319,10 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
             uint256 approvalCount,
             bool isExecuted,
             uint256 proposalNonce,
-            string memory courtOrderCid
+            string memory courtOrderCid,
+            uint256 appealId,
+            bytes32 sharesHash,
+            uint64 votingDeadline
         )
     {
         InheritanceRequest storage r = _inheritanceRequests[landId];
@@ -2066,12 +2333,43 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
             r.approvalCount,
             r.isExecuted,
             r.proposalNonce,
-            r.courtOrderCid
+            r.courtOrderCid,
+            r.appealId,
+            r.sharesHash,
+            r.votingDeadline
         );
     }
 
     function hasHeirApproved(string calldata landId, address heir) external view returns (bool) {
         return _heirApproved[landId][_inheritanceRequests[landId].proposalNonce][heir];
+    }
+
+    /// @notice All appeals filed against `landId` (chronological).
+    function getInheritanceAppealsForLand(string calldata landId) external view returns (uint256[] memory) {
+        return _appealsByLand[landId];
+    }
+
+    /// @notice Full record of a single appeal by id.
+    function getInheritanceAppeal(uint256 appealId) external view returns (InheritanceAppeal memory) {
+        return _inheritanceAppeals[appealId];
+    }
+
+    /// @notice Total number of appeals ever filed (monotonic).
+    function totalInheritanceAppeals() external view returns (uint256) {
+        return _nextAppealId;
+    }
+
+    /// @notice Recompute the `sharesHash` for an off-chain heirs/shares/CID
+    ///         tuple. Auditors / indexers compare this against the on-chain
+    ///         `sharesHash` in the standing proposal to PROVE the backend
+    ///         hasn't silently swapped heir shares under the same court
+    ///         order. Pure — free to call.
+    function computeSharesHash(
+        address[] calldata heirs,
+        uint16[] calldata heirShares,
+        string calldata courtOrderCid
+    ) external pure returns (bytes32) {
+        return keccak256(abi.encode(heirs, heirShares, courtOrderCid));
     }
 
     // === LAYER 1 — subdivision views (burns parent NFT, mints children) =====
