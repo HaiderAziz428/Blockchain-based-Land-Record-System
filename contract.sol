@@ -502,6 +502,30 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         uint64 votingDeadline;
     }
 
+    /**
+     * @notice Append-only record of every tier-2 legal-override action
+     *         taken against an inheritance dispute. The arbiter is
+     *         intentionally NOT given arbitrary power — every override
+     *         must carry an updated court order CID, a legal-resolution
+     *         CID, a human-readable reason, the resolver's identity, and
+     *         a timestamp. The history is queryable via
+     *         `getLegalOverrides(landId)`.
+     *
+     * @dev    The off-chain artefacts (the two CIDs) are pinned on IPFS
+     *         and provide the cryptographic anchor to the legal authority
+     *         that compelled the override. An auditor reviewing a forced
+     *         execution can fetch both documents and verify the chain of
+     *         legal reasoning that produced the on-chain result.
+     */
+    struct LegalOverride {
+        address resolver;
+        uint64 timestamp;
+        bool forceExecuted; // true = forced execution of the standing plan; false = cancelled
+        string updatedCourtOrderCid; // new/updated court order CID
+        string legalResolutionCid; // legal-resolution document (judgment / order) CID
+        string overrideReason; // human-readable rationale
+    }
+
     /// @notice Legal subdivision plan. Burns the parent NFT and mints N
     ///         new ones. Per-new-land shareholders + shares live in
     ///         `_newLandShareholders` / `_newLandShares` keyed by
@@ -639,6 +663,14 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     mapping(string => uint256[]) private _appealsByLand;
     uint256 private _nextAppealId;
 
+    // --- Tier-2 legal-override audit log -----------------------------------
+    //
+    // Append-only record of every arbiter action (force-execute OR cancel)
+    // against an inheritance dispute. A land may accumulate multiple entries
+    // over time if it's gone through more than one dispute cycle. Anyone
+    // can read the history via `getLegalOverrides`.
+    mapping(string => LegalOverride[]) private _legalOverrides;
+
     // --- Subdivision (v7) ---------------------------------------------------
     mapping(string => SubdivisionPlan) private _subdivisionPlans;
     // (parentLandId, proposalNonce, newLandIndex) → shareholders + shares
@@ -741,7 +773,22 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     event InheritanceDisputed(string indexed landId, address indexed heir, uint256 proposalNonce);
     event InheritanceFinalized(string indexed landId, uint256 proposalNonce);
     event InheritanceExpired(string indexed landId, uint256 proposalNonce, uint64 deadline);
-    event InheritanceDisputeResolved(string indexed landId, bool forceExecuted, string courtOrderCid);
+    event InheritanceFrozenForReview(
+        string indexed landId,
+        address indexed resolver,
+        string reason,
+        uint64 timestamp
+    );
+    event LegalOverrideExecuted(
+        string indexed landId,
+        address indexed resolver,
+        uint256 overrideIndex,
+        bool forceExecuted,
+        string updatedCourtOrderCid,
+        string legalResolutionCid,
+        string overrideReason,
+        uint64 timestamp
+    );
 
     // Subdivision (v7) -------------------------------------------------------
     event SubdivisionProposed(
@@ -1292,6 +1339,74 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // again survive the unanimous-vote window. Replay protection is
     // built in: vote state is scoped to (landId, proposalNonce, heir),
     // so the new proposal sees fresh vote slots.
+    //
+    // ╔══════════════════════════════════════════════════════════════════╗
+    // ║ TWO-TIER INHERITANCE DISPUTE RESOLUTION (v8 hardening)             ║
+    // ╚══════════════════════════════════════════════════════════════════╝
+    //
+    // WHY UNANIMOUS APPROVAL FOREVER IS UNREALISTIC
+    // -----------------------------------------------------------------
+    // A naive "all heirs must approve or the inheritance is stuck" rule
+    // is mathematically simple but operationally fragile:
+    //   • A single inactive heir (overseas, ill, missing, deceased
+    //     mid-process) freezes the parcel forever.
+    //   • A single malicious heir can extort the others by withholding
+    //     their approval until paid off — a textbook holdout attack.
+    //   • The contract has no on-chain way to verify "this heir cannot
+    //     reasonably be expected to vote" — only a court does.
+    // Pure on-chain consensus therefore needs an escape valve.
+    //
+    // WHY LEGAL ENFORCEABILITY EXISTS
+    // -----------------------------------------------------------------
+    // Real-world succession is enforceable BECAUSE a judge can issue an
+    // executable order that binds parties whether they cooperate or
+    // not. v8 brings that same property on-chain via a TIER-2 legal
+    // override: when consensus stalls, the dispute escalates into
+    // formal legal review (`freezeInheritanceForReview` or
+    // heir-`disputeSuccessionPlan`), and the arbiter — backed by an
+    // updated court order and a legal resolution document, both pinned
+    // to IPFS — can compel execution OR cancel the standing plan.
+    //
+    // WHY THE HYBRID OVERRIDE MODEL IS NECESSARY
+    // -----------------------------------------------------------------
+    // Granting the arbiter unilateral authority would defeat the
+    // purpose of decentralisation. Granting it none would reproduce
+    // the pure-consensus stall problem. v8's hybrid model splits the
+    // difference: the arbiter can act, but every action is bound to
+    // four pieces of evidence written into the on-chain audit trail:
+    //   1. an UPDATED COURT ORDER CID
+    //   2. a LEGAL RESOLUTION DOCUMENT CID
+    //   3. a human-readable OVERRIDE REASON
+    //   4. the resolver's own address + on-chain timestamp
+    // The arbiter cannot move shares "because they say so" — they must
+    // commit cryptographic anchors to the off-chain legal reasoning,
+    // which any auditor can fetch from IPFS and review.
+    //
+    // TIER-1 (voluntary) and TIER-2 (legal override) state flow:
+    //
+    //   PENDING_INHERITANCE
+    //     │
+    //     ├── all heirs approve voluntarily ─────────────▶ ACTIVE (executed)
+    //     │   ── tier 1, no override needed
+    //     │
+    //     ├── any heir disputes ─────────┐
+    //     │                              │
+    //     ├── arbiter calls freeze ──────┤
+    //     │  ForReview                   ▼
+    //     │                LOCKED_INHERITANCE_DISPUTE
+    //     │                              │
+    //     │                              ├── resolveInheritanceDispute(
+    //     │                              │     forceExecute=true,
+    //     │                              │     courtCid, resolutionCid, reason)
+    //     │                              │   ──▶ ACTIVE (executed; tier-2 audit row appended)
+    //     │                              │
+    //     │                              └── resolveInheritanceDispute(
+    //     │                                    forceExecute=false,
+    //     │                                    courtCid, resolutionCid, reason)
+    //     │                                  ──▶ ACTIVE (cancelled; tier-2 audit row appended)
+    //     │
+    //     └── deadline elapses without consensus ─────▶ ACTIVE
+    //         (expireInheritance — backend re-proposes with new nonce)
     // ------------------------------------------------------------------------
 
     /**
@@ -1518,26 +1633,117 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     }
 
     /**
-     * @notice Arbiter resolves a disputed inheritance — either
-     *         force-execute (with court CID) or cancel back to ACTIVE.
+     * @notice **TIER-2 ESCALATION — court-anchored freeze.** Arbiter
+     *         transitions a `PENDING_INHERITANCE` proposal directly to
+     *         `LOCKED_INHERITANCE_DISPUTE` for formal legal review, even
+     *         when no heir has yet voted to dispute. Useful when an
+     *         external authority (court, prosecutor, regulator) requests
+     *         a stay independently of heir action.
+     *
+     * @dev    `reason` is REQUIRED (non-empty); it goes into the audit
+     *         trail via `InheritanceFrozenForReview`. The actual override
+     *         action (force-execute or cancel) still happens through
+     *         `resolveInheritanceDispute` with full metadata.
+     */
+    function freezeInheritanceForReview(
+        string calldata landId,
+        string calldata reason
+    ) external onlyRole(DISPUTE_ARBITER_ROLE) whenNotPaused boundedString(reason) {
+        if (_landRecords[landId].status != LandStatus.PENDING_INHERITANCE) {
+            revert LandRegistry__NoPendingPlan(landId);
+        }
+
+        _landRecords[landId].status = LandStatus.LOCKED_INHERITANCE_DISPUTE;
+        emit InheritanceFrozenForReview(landId, msg.sender, reason, uint64(block.timestamp));
+        emit LandStatusChanged(landId, LandStatus.LOCKED_INHERITANCE_DISPUTE);
+    }
+
+    /**
+     * @notice **TIER-2 ESCALATION — legal-override resolution.** Arbiter
+     *         resolves a disputed (or formally-frozen) inheritance proposal.
+     *         Force-executing the standing plan OR cancelling it BOTH
+     *         require the same full audit metadata: updated court order
+     *         CID, legal-resolution CID, human-readable reason. Every
+     *         call appends an immutable row to `_legalOverrides[landId]`.
+     *
+     * @dev    WHY THIS METADATA IS REQUIRED
+     *         --------------------------------------------------------
+     *         The arbiter is intentionally NOT given arbitrary power.
+     *         A pre-v8 design that let the arbiter force-execute on the
+     *         strength of role alone would replicate the same "trusted
+     *         operator" failure mode the contract is trying to avoid.
+     *         v8 attaches every override decision to:
+     *           • the COURT ORDER (`updatedCourtOrderCid`) that re-
+     *             authorises the standing share split, possibly amended
+     *             from the original;
+     *           • the LEGAL RESOLUTION document (`legalResolutionCid`) —
+     *             the judgment / written order that adjudicates the
+     *             dispute itself;
+     *           • a HUMAN-READABLE REASON the arbiter must commit to;
+     *           • the resolver's address (msg.sender) and an on-chain
+     *             timestamp.
+     *         All five anchor the off-chain legal reasoning to the
+     *         on-chain action; an auditor can fetch both CIDs and read
+     *         the human reason to verify the chain of authority.
+     *
+     *         When `forceExecute = true`, the inheritance request's
+     *         `courtOrderCid` is also updated to the new court order so
+     *         the proposal record itself reflects the most recent legal
+     *         authority — not the original court order that the heirs
+     *         disputed.
      */
     function resolveInheritanceDispute(
         string calldata landId,
         bool forceExecute,
-        string calldata courtOrderCid
-    ) external onlyRole(DISPUTE_ARBITER_ROLE) whenNotPaused nonReentrant boundedString(courtOrderCid) {
+        string calldata updatedCourtOrderCid,
+        string calldata legalResolutionCid,
+        string calldata overrideReason
+    )
+        external
+        onlyRole(DISPUTE_ARBITER_ROLE)
+        whenNotPaused
+        nonReentrant
+        boundedString(updatedCourtOrderCid)
+        boundedString(legalResolutionCid)
+        boundedString(overrideReason)
+    {
         if (_landRecords[landId].status != LandStatus.LOCKED_INHERITANCE_DISPUTE) {
             revert LandRegistry__InheritanceNotDisputed(landId);
         }
 
+        // Log the override BEFORE executing — immutable audit trail even
+        // if `_executeInheritance` later interacts with external receivers.
+        LegalOverride[] storage log = _legalOverrides[landId];
+        uint256 overrideIndex = log.length;
+        log.push(
+            LegalOverride({
+                resolver: msg.sender,
+                timestamp: uint64(block.timestamp),
+                forceExecuted: forceExecute,
+                updatedCourtOrderCid: updatedCourtOrderCid,
+                legalResolutionCid: legalResolutionCid,
+                overrideReason: overrideReason
+            })
+        );
+
         if (forceExecute) {
-            _inheritanceRequests[landId].courtOrderCid = courtOrderCid;
+            _inheritanceRequests[landId].courtOrderCid = updatedCourtOrderCid;
             _executeInheritance(landId);
         } else {
             _landRecords[landId].status = LandStatus.ACTIVE;
             emit LandStatusChanged(landId, LandStatus.ACTIVE);
         }
-        emit InheritanceDisputeResolved(landId, forceExecute, courtOrderCid);
+
+        emit LegalOverrideExecuted(
+            landId,
+            msg.sender,
+            overrideIndex,
+            forceExecute,
+            updatedCourtOrderCid,
+            legalResolutionCid,
+            overrideReason,
+            uint64(block.timestamp)
+        );
     }
 
     // ------------------------------------------------------------------------
@@ -2370,6 +2576,24 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         string calldata courtOrderCid
     ) external pure returns (bytes32) {
         return keccak256(abi.encode(heirs, heirShares, courtOrderCid));
+    }
+
+    /// @notice Full tier-2 override audit log for `landId` (chronological).
+    function getLegalOverrides(string calldata landId) external view returns (LegalOverride[] memory) {
+        return _legalOverrides[landId];
+    }
+
+    /// @notice One override entry by index.
+    function getLegalOverride(
+        string calldata landId,
+        uint256 index
+    ) external view returns (LegalOverride memory) {
+        return _legalOverrides[landId][index];
+    }
+
+    /// @notice Number of tier-2 overrides recorded against this land.
+    function totalLegalOverrides(string calldata landId) external view returns (uint256) {
+        return _legalOverrides[landId].length;
     }
 
     // === LAYER 1 — subdivision views (burns parent NFT, mints children) =====
