@@ -59,6 +59,9 @@ error LandRegistry__NotInImportPhase(string landId);
 error LandRegistry__NotAProposedOwner(address caller);
 error LandRegistry__AlreadyVerified();
 error LandRegistry__ImportNotDisputed(string landId);
+error LandRegistry__VerificationExpired(string landId, uint64 deadline);
+error LandRegistry__VerificationNotExpired(string landId, uint64 deadline);
+error LandRegistry__InvalidVerificationDuration();
 
 // Inheritance
 error LandRegistry__InheritanceArrayMismatch();
@@ -166,14 +169,69 @@ error LandRegistry__OccupancyAlreadyRevoked();
  *             separate ledger (`_occupancyAgreements`) and never touches
  *             the share ledger.
  *
+ *         WHY OWNER CONSENSUS IS NECESSARY (v7 verification system)
+ *         -----------------------------------------------------------------
+ *         A naive design would let the backend (developer's transfer
+ *         office) mint land NFTs unilaterally on the strength of off-chain
+ *         records alone. That replicates the same single-point-of-trust
+ *         that on-chain land registries are supposed to eliminate: a
+ *         corrupt or merely mistaken backend operator could mint a land
+ *         NFT to the wrong wallets, and the on-chain "record of truth"
+ *         would inherit the off-chain error.
+ *
+ *         v7 instead requires unanimous on-chain consent from the proposed
+ *         co-owner set BEFORE the NFT is minted. Any one of the proposed
+ *         owners can refuse a wrong import (`disputeLandImport`) or simply
+ *         let the verification window expire (`expireLandImport`). The
+ *         NFT mints atomically with the last verification — there is no
+ *         intermediate state where some owners have agreed and some
+ *         haven't but the NFT already exists.
+ *
+ *         WHY BACKEND AUTHORITY IS INTENTIONALLY LIMITED
+ *         -----------------------------------------------------------------
+ *         `MINTER_ROLE` can ONLY:
+ *           • propose imports (filing the record from the off-chain registry)
+ *           • cancel its own proposals while still PENDING_VERIFICATION
+ *         It CANNOT:
+ *           • finalise a mint without all proposed owners verifying
+ *           • override a dispute (only DISPUTE_ARBITER_ROLE can, and only
+ *             with a court-order CID)
+ *           • move shares, list, buy, initiate inheritance, or initiate
+ *             subdivision
+ *         A leaked MINTER key cannot steal land — at worst it spam-creates
+ *         proposals that all expire after the verification window without
+ *         anyone consenting.
+ *
+ *         WHY MINTING ONLY AFTER VERIFICATION
+ *         -----------------------------------------------------------------
+ *         If the NFT were minted at proposal time with some "tentative"
+ *         flag, downstream systems (indexers, frontends, marketplaces)
+ *         would have to filter by that flag everywhere. By keeping the
+ *         NFT non-existent until verification completes, every existing
+ *         ERC-721 read (`ownerOf`, `tokenURI`, OpenSea metadata fetch)
+ *         only ever sees lands whose ownership has reached consensus.
+ *         There is no "fake" NFT to filter out.
+ *
+ *         VERIFICATION DEADLINE (v7 anti-griefing)
+ *         -----------------------------------------------------------------
+ *         Without a deadline a single non-responding proposed owner could
+ *         permanently park a landId in PENDING_VERIFICATION, blocking
+ *         future re-imports of the same parcel. `VERIFICATION_DURATION`
+ *         (90 days) caps how long an import may sit pending. After the
+ *         deadline anyone may call `expireLandImport` to delete the
+ *         shell and free the landId for a fresh proposal. The backend
+ *         can also cancel earlier via `cancelLandImport`.
+ *
  *         EIGHT-STATE LIFECYCLE
  *         -----------------------------------------------------------------
- *             PROPOSED ──────────── import filed; awaiting all-owner verify
+ *             PENDING_VERIFICATION ─ import filed; awaiting all-owner verify
  *                ├── all verify ────────────────────────────── ACTIVE
  *                ├── any dispute ─────────────────── LOCKED_IMPORT_DISPUTE
  *                │                ├── arbiter force-approve ─── ACTIVE
  *                │                └── arbiter cancel ────── (record deleted)
- *                └── minter cancel ────────────────────────── (record deleted)
+ *                ├── minter cancel ────────────────────────── (record deleted)
+ *                └── verification deadline elapsed
+ *                          (anyone may call expireLandImport) ── (record deleted)
  *
  *             ACTIVE ─────────────── routine ops permitted
  *                ├── initiateInheritance ─────────── PENDING_INHERITANCE
@@ -214,8 +272,16 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         COMMERCIAL
     }
 
+    /// @notice Land lifecycle.
+    ///
+    /// @dev    `PENDING_VERIFICATION` is the entry state of every imported
+    ///         land. The NFT does NOT exist yet and the share ledger has
+    ///         NOT been populated. The land only transitions to `ACTIVE`
+    ///         when EVERY proposed co-owner has called `verifyLandImport`
+    ///         within the verification window — see contract preamble
+    ///         "WHY OWNER CONSENSUS IS NECESSARY" for full rationale.
     enum LandStatus {
-        PROPOSED,
+        PENDING_VERIFICATION, // import filed; awaiting all-owner verify within VERIFICATION_DURATION
         ACTIVE,
         PENDING_INHERITANCE,
         PENDING_SUBDIVISION,
@@ -247,6 +313,11 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     /// @notice Pending land import. Until every proposed co-owner has
     ///         verified, the NFT has NOT been minted and the share ledger
     ///         has NOT been populated.
+    ///
+    /// @dev    `verificationDeadline` is `proposedAt + VERIFICATION_DURATION`.
+    ///         After this timestamp, `verifyLandImport` reverts and
+    ///         anyone may call `expireLandImport` to delete the shell and
+    ///         free the landId for a re-import.
     struct ImportProposal {
         address proposer;
         address[] proposedOwners;
@@ -254,6 +325,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         uint256 verificationCount;
         string courtOrderCid; // optional — non-empty only for court-anchored imports
         uint256 proposalNonce;
+        uint64 verificationDeadline;
         bool isCancelled;
     }
 
@@ -331,6 +403,13 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // --- Constants -----------------------------------------------------------
     uint16 public constant TOTAL_SHARES = 10_000;
     uint64 public constant LISTING_DURATION = 7 days;
+    /// @notice Maximum window in which all proposed co-owners must verify
+    ///         an imported land. Chosen at 90 days because real Pakistani
+    ///         allotment files often involve elderly owners, overseas
+    ///         family members, and slow off-chain communication. After
+    ///         expiry, anyone may call `expireLandImport` to free the
+    ///         landId — no shareholder can be silently stuck.
+    uint64 public constant VERIFICATION_DURATION = 90 days;
     uint256 public constant MAX_HEIRS = 50;
     uint256 public constant MAX_SHAREHOLDERS = 100;
     uint256 public constant MAX_SUBDIVISIONS_PER_PROPOSAL = 20;
@@ -400,11 +479,19 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         address indexed proposer,
         uint256 ownerCount,
         string courtOrderCid,
-        uint256 proposalNonce
+        uint256 proposalNonce,
+        uint64 verificationDeadline
     );
-    event LandImportVerified(string indexed landId, address indexed owner, uint256 proposalNonce);
+    event LandImportVerified(
+        string indexed landId,
+        address indexed owner,
+        uint256 proposalNonce,
+        uint256 verificationCount,
+        uint256 ownersTotal
+    );
     event LandImportDisputed(string indexed landId, address indexed disputer, uint256 proposalNonce);
     event LandImportCancelled(string indexed landId);
+    event LandImportExpired(string indexed landId, uint256 proposalNonce, uint64 deadline);
     event LandImportResolved(string indexed landId, bool forceApproved, string courtOrderCid);
     event LandImportFinalized(string indexed landId, uint256 proposalNonce);
 
@@ -621,6 +708,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
 
         ImportProposal storage proposal = _importProposals[landId];
         uint256 nonce = proposal.proposalNonce + 1;
+        uint64 deadline = uint64(block.timestamp) + VERIFICATION_DURATION;
 
         proposal.proposer = msg.sender;
         proposal.proposedOwners = proposedOwners;
@@ -628,13 +716,14 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         proposal.verificationCount = 0;
         proposal.courtOrderCid = courtOrderCid;
         proposal.proposalNonce = nonce;
+        proposal.verificationDeadline = deadline;
         proposal.isCancelled = false;
 
         _landRecords[landId] = LandRecord({
             landId: landId,
             ipfsHash: ipfsHash,
             landType: lType,
-            status: LandStatus.PROPOSED,
+            status: LandStatus.PENDING_VERIFICATION,
             proposedAt: uint64(block.timestamp),
             verifiedAt: 0
         });
@@ -648,41 +737,97 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
             }
         }
 
-        emit LandImportProposed(landId, msg.sender, n, courtOrderCid, nonce);
-        emit LandStatusChanged(landId, LandStatus.PROPOSED);
+        emit LandImportProposed(landId, msg.sender, n, courtOrderCid, nonce, deadline);
+        emit LandStatusChanged(landId, LandStatus.PENDING_VERIFICATION);
     }
 
     /**
      * @notice A proposed co-owner verifies the imported record. When the
      *         LAST proposed owner verifies, the import is finalised:
      *         NFT minted, share ledger populated, status → ACTIVE.
+     *
+     * @dev    SECURITY / GOVERNANCE
+     *         --------------------------------------------------------
+     *         Three checks scoped to the current `proposalNonce` make
+     *         the verification ledger immutable and auditable:
+     *
+     *           1. `_isProposedOwner[landId][nonce][msg.sender]` —
+     *              caller MUST have been named at proposal time. A
+     *              wallet that wasn't in the proposal cannot inject a
+     *              verification.
+     *           2. `!_importVerified[landId][nonce][msg.sender]` —
+     *              every verification is one-shot. A re-imported
+     *              proposal (new nonce) gets fresh verification state.
+     *           3. `block.timestamp <= verificationDeadline` — stale
+     *              proposals cannot be finalised after the window. This
+     *              forces fresh consent if the off-chain situation has
+     *              changed (an owner died, sold off-chain, etc.).
+     *
+     *         The mint + ledger population in `_finalizeImport` is
+     *         atomic with this verification: there is no intermediate
+     *         state where the NFT exists but consensus is incomplete.
+     *
+     *         `nonReentrant` because `_finalizeImport` calls `_mint`
+     *         which can invoke ERC-721 receiver hooks on the receiving
+     *         contract (here `address(this)`).
      */
     function verifyLandImport(string calldata landId) external whenNotPaused nonReentrant {
         LandRecord storage record = _landRecords[landId];
         if (!_landExists[landId]) revert LandRegistry__LandNotFound(landId);
-        if (record.status != LandStatus.PROPOSED) revert LandRegistry__NotInImportPhase(landId);
+        if (record.status != LandStatus.PENDING_VERIFICATION) revert LandRegistry__NotInImportPhase(landId);
 
         ImportProposal storage proposal = _importProposals[landId];
         uint256 nonce = proposal.proposalNonce;
 
+        if (block.timestamp > proposal.verificationDeadline) {
+            revert LandRegistry__VerificationExpired(landId, proposal.verificationDeadline);
+        }
         if (!_isProposedOwner[landId][nonce][msg.sender]) revert LandRegistry__NotAProposedOwner(msg.sender);
         if (_importVerified[landId][nonce][msg.sender]) revert LandRegistry__AlreadyVerified();
 
         _importVerified[landId][nonce][msg.sender] = true;
         uint256 newCount = proposal.verificationCount + 1;
         proposal.verificationCount = newCount;
+        uint256 ownersTotal = proposal.proposedOwners.length;
 
-        emit LandImportVerified(landId, msg.sender, nonce);
+        emit LandImportVerified(landId, msg.sender, nonce, newCount, ownersTotal);
 
-        if (newCount == proposal.proposedOwners.length) {
+        if (newCount == ownersTotal) {
             _finalizeImport(landId);
         }
+    }
+
+    /**
+     * @notice After the verification deadline has elapsed, ANYONE may
+     *         delete the import shell so the landId is freed for a
+     *         fresh proposal. The proposalNonce is preserved so re-
+     *         imports continue incrementing it (defense against any
+     *         residual scoped state).
+     *
+     * @dev    Open to all callers because it's a public utility — the
+     *         caller pays gas but the action is bounded by an
+     *         on-chain timestamp that already expired. There is no
+     *         attacker-controlled variant.
+     */
+    function expireLandImport(string calldata landId) external whenNotPaused {
+        LandRecord storage record = _landRecords[landId];
+        if (record.status != LandStatus.PENDING_VERIFICATION) revert LandRegistry__NotInImportPhase(landId);
+
+        ImportProposal storage proposal = _importProposals[landId];
+        uint64 deadline = proposal.verificationDeadline;
+        if (block.timestamp <= deadline) {
+            revert LandRegistry__VerificationNotExpired(landId, deadline);
+        }
+
+        uint256 nonce = proposal.proposalNonce;
+        _deleteLandShell(landId);
+        emit LandImportExpired(landId, nonce, deadline);
     }
 
     /// @notice Any proposed owner can dispute, locking the import.
     function disputeLandImport(string calldata landId) external whenNotPaused {
         LandRecord storage record = _landRecords[landId];
-        if (record.status != LandStatus.PROPOSED) revert LandRegistry__NotInImportPhase(landId);
+        if (record.status != LandStatus.PENDING_VERIFICATION) revert LandRegistry__NotInImportPhase(landId);
 
         ImportProposal storage proposal = _importProposals[landId];
         if (!_isProposedOwner[landId][proposal.proposalNonce][msg.sender]) {
@@ -698,7 +843,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     ///         it finalises (status PROPOSED).
     function cancelLandImport(string calldata landId) external onlyRole(MINTER_ROLE) whenNotPaused {
         LandRecord storage record = _landRecords[landId];
-        if (record.status != LandStatus.PROPOSED) revert LandRegistry__NotInImportPhase(landId);
+        if (record.status != LandStatus.PENDING_VERIFICATION) revert LandRegistry__NotInImportPhase(landId);
 
         _importProposals[landId].isCancelled = true;
         _deleteLandShell(landId);
@@ -1648,6 +1793,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
             uint256 verificationCount,
             string memory courtOrderCid,
             uint256 proposalNonce,
+            uint64 verificationDeadline,
             bool isCancelled
         )
     {
@@ -1659,12 +1805,79 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
             p.verificationCount,
             p.courtOrderCid,
             p.proposalNonce,
+            p.verificationDeadline,
             p.isCancelled
         );
     }
 
+    /// @notice Has `owner` verified the CURRENT proposal for `landId`?
     function isImportVerified(string calldata landId, address owner) external view returns (bool) {
         return _importVerified[landId][_importProposals[landId].proposalNonce][owner];
+    }
+
+    /// @notice Addresses that are proposed owners on the current import
+    ///         proposal but have NOT yet verified. Use this on the
+    ///         "Pending verifications" dashboard to nudge the right
+    ///         wallets. Returns an empty array when status != PENDING_VERIFICATION.
+    function getPendingVerifiers(string calldata landId) external view returns (address[] memory pending) {
+        if (_landRecords[landId].status != LandStatus.PENDING_VERIFICATION) {
+            return new address[](0);
+        }
+        ImportProposal storage p = _importProposals[landId];
+        uint256 nonce = p.proposalNonce;
+        address[] memory all = p.proposedOwners;
+        uint256 n = all.length;
+
+        uint256 pendingCount;
+        for (uint256 i = 0; i < n; ) {
+            if (!_importVerified[landId][nonce][all[i]]) {
+                unchecked {
+                    ++pendingCount;
+                }
+            }
+            unchecked {
+                ++i;
+            }
+        }
+
+        pending = new address[](pendingCount);
+        uint256 j;
+        for (uint256 i = 0; i < n; ) {
+            if (!_importVerified[landId][nonce][all[i]]) {
+                pending[j] = all[i];
+                unchecked {
+                    ++j;
+                }
+            }
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    /// @notice Aggregated read for the "verification status" panel.
+    ///         Returns the current vs total count, the deadline, and a
+    ///         flag indicating whether the window has already elapsed.
+    function getVerificationStatus(
+        string calldata landId
+    )
+        external
+        view
+        returns (
+            LandStatus status,
+            uint256 verifiedCount,
+            uint256 ownersTotal,
+            uint64 verificationDeadline,
+            bool isExpired
+        )
+    {
+        LandRecord storage r = _landRecords[landId];
+        ImportProposal storage p = _importProposals[landId];
+        status = r.status;
+        verifiedCount = p.verificationCount;
+        ownersTotal = p.proposedOwners.length;
+        verificationDeadline = p.verificationDeadline;
+        isExpired = (p.verificationDeadline != 0 && block.timestamp > p.verificationDeadline);
     }
 
     // Marketplace views ------------------------------------------------------

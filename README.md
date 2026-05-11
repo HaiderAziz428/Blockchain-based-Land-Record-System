@@ -519,11 +519,13 @@ v7 therefore implements **three explicit governance layers**:
 ### 🧭 Eight-State Lifecycle
 
 ```
-PROPOSED ──┬── all verify ──────────────────────────────────────→ ACTIVE
-           ├── any dispute ────────────────────→ LOCKED_IMPORT_DISPUTE
-           │                ├── arbiter force-approve (+ court CID) → ACTIVE
-           │                └── arbiter cancel ───────────────→ (record deleted)
-           └── minter cancel ─────────────────────────────────→ (record deleted)
+PENDING_VERIFICATION ──┬── all proposed owners verify ────────→ ACTIVE
+                       ├── any proposed owner disputes ──────→ LOCKED_IMPORT_DISPUTE
+                       │                ├── arbiter force-approve (+ court CID) → ACTIVE
+                       │                └── arbiter cancel ───────────────→ (record deleted)
+                       ├── minter cancels their own proposal ─→ (record deleted)
+                       └── verification deadline elapsed
+                           (anyone may call expireLandImport) → (record deleted)
 
 ACTIVE ────┬── initiateInheritance ─────────────→ PENDING_INHERITANCE
            │                                   ├── all heirs approve → ACTIVE (redistributed)
@@ -610,7 +612,7 @@ The system intentionally consolidates all logic into a single contract to minimi
 | Module | Purpose |
 |--------|---------|
 | **Identity** | `registerUser`, `getUser`, `cnicToAddress` |
-| **Land Import** _(v7 — multi-party verification)_ | `proposeLandImport`, `verifyLandImport`, `disputeLandImport`, `cancelLandImport`, `resolveLandImportDispute`, `getImportProposal`, `isImportVerified` |
+| **Land Import** _(v7 — multi-party verification)_ | `proposeLandImport`, `verifyLandImport`, `disputeLandImport`, `cancelLandImport`, `expireLandImport`, `resolveLandImportDispute`, `getImportProposal`, `isImportVerified`, `getPendingVerifiers`, `getVerificationStatus` |
 | **Land Data** | `getLandRecord`, `_landExists`, `tokenURI` (NFT minted only at import finalisation) |
 | **NFT (ERC-721)** | OpenZeppelin `ERC721`; deterministic `tokenId = keccak256(landId)`; **self-custodial** — `_update` override allows only mint + burn (subdivision) |
 | **Share Ledger** | `transferShare`, `getShareholders`, `getShareholdersWithBps`, `getShareBps`, `getTotalShares` |
@@ -629,11 +631,12 @@ The system intentionally consolidates all logic into a single contract to minimi
 | Function | Caller | Modifier(s) | Description |
 |----------|--------|-------------|-------------|
 | `registerUser(name, cnic)` | Citizen | `whenNotPaused`, `boundedString` | One-time wallet ↔ CNIC binding |
-| **`proposeLandImport(landId, ipfsHash, lType, proposedOwners[], proposedShares[], courtOrderCid)`** _(v7)_ | Minter | `onlyRole(MINTER_ROLE)`, `whenNotPaused`, `boundedString` | Files an import for all-owner verification; NFT NOT minted yet; shares must sum to 10,000 |
-| **`verifyLandImport(landId)`** _(v7)_ | Proposed owner | `whenNotPaused`, `nonReentrant` | Confirms the import; when ALL proposed owners verify, NFT mints + ledger populates atomically |
-| **`disputeLandImport(landId)`** _(v7)_ | Proposed owner | `whenNotPaused` | Locks the import (→ `LOCKED_IMPORT_DISPUTE`) |
-| **`cancelLandImport(landId)`** _(v7)_ | Minter | `onlyRole(MINTER_ROLE)`, `whenNotPaused` | Cancels caller's own pending proposal |
-| **`resolveLandImportDispute(landId, forceApprove, courtOrderCid)`** _(v7)_ | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `nonReentrant`, `boundedString` | Force-approve (with court CID) or cancel |
+| **`proposeLandImport(landId, ipfsHash, lType, proposedOwners[], proposedShares[], courtOrderCid)`** | Minter | `onlyRole(MINTER_ROLE)`, `whenNotPaused`, `boundedString` | Files an import for all-owner verification; NFT NOT minted yet; shares must sum to 10,000; verification window of `VERIFICATION_DURATION` (90 days) starts now |
+| **`verifyLandImport(landId)`** | Proposed owner | `whenNotPaused`, `nonReentrant` | Records caller's verification (immutable, scoped to `proposalNonce`); when ALL proposed owners verify within the deadline, NFT mints + ledger populates atomically |
+| **`disputeLandImport(landId)`** | Proposed owner | `whenNotPaused` | Locks the import (→ `LOCKED_IMPORT_DISPUTE`) — freezes the deadline; arbiter resolution required |
+| **`cancelLandImport(landId)`** | Minter | `onlyRole(MINTER_ROLE)`, `whenNotPaused` | Cancels caller's own pending proposal |
+| **`expireLandImport(landId)`** _(new — v7 verification refinement)_ | Anyone | `whenNotPaused` | After the verification deadline has elapsed, deletes the import shell so the landId is freed for re-import. Public utility — no role required |
+| **`resolveLandImportDispute(landId, forceApprove, courtOrderCid)`** | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `nonReentrant`, `boundedString` | Force-approve (with court CID) or cancel |
 | `transferShare(landId, recipient, shareBps, price)` | Shareholder | `whenNotPaused`, `nonReentrant`, `landMustExist`, `onlyActive` | Transfer a bps portion of caller's share |
 | `listShareForSale(landId, shareBpsForSale, price, metaHash)` | Shareholder | `whenNotPaused`, `landMustExist`, `onlyActive`, `boundedString` | List a bps portion for sale (7-day deadline) |
 | `updateListingPrice(landId, newPrice)` | Seller | `whenNotPaused` | **Decrease only** on caller's own listing |
@@ -659,7 +662,10 @@ The system intentionally consolidates all logic into a single contract to minimi
 | `getListing(landId, seller)` | Anyone | view | Listing for a (land, seller) pair |
 | `getOwnershipHistory(landId)` | Anyone | view | Full append-only audit log |
 | `getInheritanceRequest(landId)` | Anyone | view | Full proposal (deceased, heirs, shares, courtOrderCid) |
-| `getImportProposal(landId)` _(v7)_ | Anyone | view | Pending import details |
+| `getImportProposal(landId)` | Anyone | view | Full import details (proposer, owners, shares, deadline, courtCid, nonce) |
+| `isImportVerified(landId, owner)` | Anyone | view | Whether `owner` has verified the current proposal |
+| `getPendingVerifiers(landId)` _(new)_ | Anyone | view | Subset of proposed owners who still haven't verified |
+| `getVerificationStatus(landId)` _(new)_ | Anyone | view | Aggregated `(status, verified, total, deadline, isExpired)` for the verification panel |
 | `getSubdivisionPlan(landId)` / `getSubdivisionPart(landId, i)` _(v7)_ | Anyone | view | Subdivision plan + per-child allocations |
 | `getOccupancyAgreements(landId)` _(v7)_ | Anyone | view | All occupancy agreements (incl. revoked) |
 | `getAllLandRecordsPaginated(cursor, size)` | Anyone | view | Cursor-based admin pagination |
@@ -671,10 +677,11 @@ The system intentionally consolidates all logic into a single contract to minimi
 event UserRegistered(address indexed user, string name, string cnic);
 
 // Land import (v7) -------------------------------------------------------------
-event LandImportProposed(string indexed landId, address indexed proposer, uint256 ownerCount, string courtOrderCid, uint256 proposalNonce);
-event LandImportVerified(string indexed landId, address indexed owner, uint256 proposalNonce);
+event LandImportProposed(string indexed landId, address indexed proposer, uint256 ownerCount, string courtOrderCid, uint256 proposalNonce, uint64 verificationDeadline);
+event LandImportVerified(string indexed landId, address indexed owner, uint256 proposalNonce, uint256 verificationCount, uint256 ownersTotal);
 event LandImportDisputed(string indexed landId, address indexed disputer, uint256 proposalNonce);
 event LandImportCancelled(string indexed landId);
+event LandImportExpired(string indexed landId, uint256 proposalNonce, uint64 deadline);
 event LandImportResolved(string indexed landId, bool forceApproved, string courtOrderCid);
 event LandImportFinalized(string indexed landId, uint256 proposalNonce);
 
@@ -924,7 +931,7 @@ erDiagram
 ```solidity
 enum LandType   { RESIDENTIAL, AGRICULTURAL, COMMERCIAL }
 enum LandStatus {
-    PROPOSED,                       // import filed; awaiting all-owner verify
+    PENDING_VERIFICATION,           // import filed; awaiting all-owner verify within VERIFICATION_DURATION
     ACTIVE,                         // operational
     PENDING_INHERITANCE,
     PENDING_SUBDIVISION,
@@ -940,7 +947,8 @@ struct LandRecord         { string landId; string ipfsHash; LandType landType; L
 struct UserProfile        { string name; string cnic; bool isRegistered; }
 
 // Pre-mint import — NFT and share ledger are NOT yet created.
-struct ImportProposal     { address proposer; address[] proposedOwners; uint16[] proposedShares; uint256 verificationCount; string courtOrderCid; uint256 proposalNonce; bool isCancelled; }
+// verificationDeadline = proposedAt + VERIFICATION_DURATION (90 days).
+struct ImportProposal     { address proposer; address[] proposedOwners; uint16[] proposedShares; uint256 verificationCount; string courtOrderCid; uint256 proposalNonce; uint64 verificationDeadline; bool isCancelled; }
 
 struct Listing            { uint16 shareBpsForSale; uint256 price; address seller; bool isActive; uint64 deadline; string metadataHash; }
 
@@ -1332,6 +1340,7 @@ flowchart LR
 | 16 | **v4 still had structural security weaknesses** — push payments in `buyLand` could be griefed by malicious-seller `receive()`; `BACKEND_ROLE` bundled mint + inheritance + dispute (compromise = full powers); `updateListingPrice` allowed silent raises enabling seller-side front-running; `buyLand` had no buyer-side price-slippage guard; `nonReentrant` was only on `buyLand` (not on other NFT-callback paths); user strings had no length cap; `emergencyWithdraw` could theoretically drain seller escrow | **v5 security hardening:** pull-payment escrow (`_pendingWithdrawals` + `withdrawProceeds`); role separation into `MINTER_ROLE` / `INHERITANCE_ORACLE_ROLE` / `DISPUTE_ARBITER_ROLE`; `maxPrice` parameter on `buyLand`; decrease-only `updateListingPrice`; `nonReentrant` on every NFT-mutating external function; `MAX_STRING_LENGTH` cap + `boundedString` modifier; `_totalPendingWithdrawals` accounting protects seller escrow from `emergencyWithdraw`; `withdrawProceeds` not gated by `pause`; heir ≠ current owner sanity check; `Address.sendValue` for all outgoing ETH. |
 | 17 | **The "one land = one owner" model was conceptually wrong.** Inheritance burned the original NFT and minted a fresh NFT per heir — modelling succession as forced physical subdivision. In reality, when a Pakistani allottee dies leaving three children, those children become **co-owners** of the same plot, not three new plots. The model also lost NFT identity continuity (new tokenIds break provenance trackers / indexers) and provided no way to sell a partial share. | **v6 fractional-ownership refactor:** introduced a basis-point share ledger (`_shareBps[landId][holder]`, `TOTAL_SHARES = 10000`). Each land has exactly one NFT for its lifetime; ownership is the share ledger. Five invariants (Σ shares = 10000, no zero-share holders, no duplicates, ≤ MAX_SHAREHOLDERS, all holders authorised). Inheritance now redistributes the deceased's shares — no burn, no remint, other co-owners untouched. Added `transferShare`, `listShareForSale`, `buyShare(landId, seller, maxPrice)` for partial-ownership operations. NFT is self-custodial (minted to `address(this)`) — `_update` override rejects all post-mint transitions, preventing accidental NFT movement that would desync from the share ledger. |
 | 18 | **v6 still treated the backend as a unilateral oracle**: `storeVerifiedLandRecord` minted the NFT immediately on the backend's say-so, with no on-chain check that the proposed co-owners agreed with the imported share split. A corrupt or erroneous backend could silently mint to wrong owners. The model also had no on-chain workflow for *deliberate* legal subdivision (when heirs actually do want separate plots) and no on-chain expression of occupancy / use-rights distinct from ownership. | **v7 hybrid-governance refactor:** Pakistani land governance is explicitly modelled as hybrid (chain holds identity; courts, the developer registry, and proposed owners themselves hold legal authority). Three changes anchor this: (a) **Land import is two-phase** — `proposeLandImport` files a record with proposed co-owners and shares; each owner calls `verifyLandImport`; the NFT mints + share ledger populates only after ALL verify. (b) **Legal subdivision is a first-class workflow** — `SUBDIVISION_ORACLE_ROLE` files a court-anchored plan with per-child shareholder/share allocations; ALL current shareholders must approve; on execution the parent NFT is burned (status → `SUBDIVIDED`, terminal) and N new child NFTs are minted with their own share ledgers. (c) **Occupancy / use-right agreements** are a separate ledger from ownership — any shareholder can grant a time-bound right of use to a non-owner; does NOT affect the share ledger. Every dispute-arbiter override now requires a `courtOrderCid` (IPFS) — every legal-authority override is publicly auditable. `BACKEND_ROLE` further split into `MINTER` / `INHERITANCE_ORACLE` / `SUBDIVISION_ORACLE` / `DISPUTE_ARBITER` for tightest least-privilege. Eight-state lifecycle. |
+| 19 | **v7 import flow could be stuck indefinitely** — without a deadline, a single non-responding proposed owner could permanently park a `landId` in the verification phase, blocking any subsequent re-import of the same parcel. The status name `PROPOSED` also under-communicated the consent-pending semantics to off-chain integrators. The audit panel had no atomic "show me everyone still owing a verification" view. | **v7 verification refinements:** (a) renamed `LandStatus.PROPOSED` → `LandStatus.PENDING_VERIFICATION` for clarity; (b) added `VERIFICATION_DURATION = 90 days` and stored `verificationDeadline` on every `ImportProposal`; `verifyLandImport` now reverts if past deadline; (c) added `expireLandImport(landId)` — public utility callable by anyone after the deadline elapses, deletes the shell so the `landId` is free for re-import; (d) emitted `verificationCount` / `ownersTotal` in `LandImportVerified` and `verificationDeadline` in `LandImportProposed` for indexers; (e) added `getPendingVerifiers(landId)` and `getVerificationStatus(landId)` views for the verification dashboard; (f) strengthened NatSpec under "WHY OWNER CONSENSUS IS NECESSARY", "WHY BACKEND AUTHORITY IS INTENTIONALLY LIMITED", and "WHY MINTING ONLY AFTER VERIFICATION". |
 
 ---
 
