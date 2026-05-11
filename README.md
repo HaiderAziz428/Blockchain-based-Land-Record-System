@@ -67,7 +67,7 @@
 | **Submission Year** | 2026 |
 | **Project Duration** | 8 months (Sept 2025 — May 2026) |
 | **Deployed Network** | Ethereum Sepolia Testnet |
-| **Deployed Contract** | [`0xd2a855a8fC38d4E0a871319d5882E696155d1253`](https://sepolia.etherscan.io/address/0xd2a855a8fC38d4E0a871319d5882E696155d1253) — _legacy v3 contract; the audit-grade v4 source in `contract.sol` requires redeployment before the frontend can use it (see §Smart Contract Design)_ |
+| **Deployed Contract** | [`0xd2a855a8fC38d4E0a871319d5882E696155d1253`](https://sepolia.etherscan.io/address/0xd2a855a8fC38d4E0a871319d5882E696155d1253) — _legacy v3; the security-hardened v5 source in `contract.sol` requires redeployment before the frontend can use it (see §Smart Contract Design)_ |
 
 ---
 
@@ -494,53 +494,72 @@ flowchart TD
 
 ## 📜 Smart Contract Design
 
-### Single Contract: `LandRegistry.sol` — _v4 Audit-Grade Architecture_
+### Single Contract: `LandRegistry.sol` — _v5 Security-Hardened Architecture_
 
 The system intentionally consolidates all logic into a single contract to minimize cross-contract calls and gas overhead. Modules are organized via section comments and follow the canonical Solidity layout order (errors → types → state → events → modifiers → constructor → external → internal → views).
 
-**v4 inherits from four OpenZeppelin primitives instead of one:**
+**v5 inherits from four OpenZeppelin primitives:**
 
 | Inherited | Why |
 |-----------|-----|
 | `ERC721` | Land NFT semantics |
-| `AccessControl` | Rotatable role-based permissions (replaces immutable `verificationBackend`) |
-| `Pausable` | Emergency pause on every user-facing write |
-| `ReentrancyGuard` | Belt-and-suspenders on `buyLand` in addition to strict CEI |
+| `AccessControl` | Rotatable role-based permissions with **role separation** (see matrix below) |
+| `Pausable` | Emergency pause on every user-facing write — **pull-payment withdrawals stay open during pause** so funds are never trapped |
+| `ReentrancyGuard` | Applied to **every state-mutating path that touches NFT transfers or ETH** — not just `buyLand` |
+
+**v5 Headline Security Upgrades (over v4):**
+
+| # | Improvement | What it prevents |
+|---|------------|------------------|
+| 1 | **Pull-payment escrow** for sale proceeds | A malicious seller's reverting `receive()` can no longer grief buyers — the seller pulls funds via `withdrawProceeds()` |
+| 2 | **Role separation** — `BACKEND_ROLE` split into `MINTER_ROLE`, `INHERITANCE_ORACLE_ROLE`, `DISPUTE_ARBITER_ROLE` | Compromise of one off-chain key no longer exposes mint + inheritance + dispute powers simultaneously |
+| 3 | **`maxPrice` parameter on `buyLand`** | Seller-side front-running — buyer fails closed if listing price moved between sign and confirm |
+| 4 | **Decrease-only `updateListingPrice`** | Seller cannot silently raise price; raising requires `cancelListing` + `listLandForSale` (visibly resets clock) |
+| 5 | **`nonReentrant` on every NFT-mutating path** | `onERC721Received` reentrancy via malicious recipient contracts (mint, transfer, marketplace, inheritance) |
+| 6 | **String length cap (`MAX_STRING_LENGTH = 256`)** on all inputs | Gas griefing via giant strings pinned into storage |
+| 7 | **Heir ≠ current owner check** at `initiate` | Self-inheritance bypass / sanity guard |
+| 8 | **`_totalPendingWithdrawals` accounting** | `emergencyWithdraw` can sweep ONLY stray ETH — never user balances, even if admin is malicious |
+| 9 | **Withdrawals NOT gated by pause** | Pause halts new ops without trapping seller earnings |
+| 10 | **`Address.sendValue`** for all outgoing ETH | OZ-standardised reverting-on-failure; cleaner than manual `.call` |
 
 | Module | Purpose |
 |--------|---------|
 | **Identity** | `registerUser`, `getUser`, `cnicToAddress` |
 | **Land Data** | `storeVerifiedLandRecord`, `getLandRecord`, `landExists` (private) |
 | **NFT (ERC-721)** | OpenZeppelin `ERC721`; deterministic `tokenId = keccak256(landId)`; `_update` hook auto-clears stale listings on every transfer |
-| **Marketplace** | `listLandForSale`, `updateListingPrice` _(new)_, `buyLand`, `cancelListing`, `getListing` |
+| **Marketplace** | `listLandForSale`, `updateListingPrice` _(decrease-only)_, `buyLand(landId, maxPrice)`, `cancelListing`, `getListing` |
+| **Escrow** _(new in v5)_ | `withdrawProceeds`, `pendingProceeds`, `totalPendingWithdrawals` — pull-payment ledger for sale proceeds |
 | **Inheritance** | `initiateInheritance`, `approveSuccessionPlan`, `disputeSuccessionPlan`, `resolveDispute`, `getInheritanceRequest`, `hasHeirApproved` |
 | **Indexing** | `_allLandIds`, `_ownerToLands`, `getAllLandRecordsPaginated`, `getLandsByOwner`, `totalLandRecords` |
-| **Access Control** | `DEFAULT_ADMIN_ROLE`, `BACKEND_ROLE`, `GOVT_AUTHORITY_ROLE`, `PAUSER_ROLE` (all via `AccessControl`) |
-| **Lifecycle** | `pause`, `unpause`, `emergencyWithdraw`, `setGovtAuthority` |
+| **Access Control** _(role-separated in v5)_ | `DEFAULT_ADMIN_ROLE`, `MINTER_ROLE`, `INHERITANCE_ORACLE_ROLE`, `DISPUTE_ARBITER_ROLE`, `GOVT_AUTHORITY_ROLE`, `PAUSER_ROLE` |
+| **Lifecycle** | `pause`, `unpause`, `emergencyWithdraw` _(stray-ETH only)_, `setGovtAuthority` |
 | **Transfers** | `transferLandOwnership`, `OwnershipHistory[]` log |
 
 ### Key Functions
 
 | Function | Caller | Modifier(s) | Description |
 |----------|--------|-------------|-------------|
-| `registerUser(name, cnic)` | Citizen | `whenNotPaused`, `nonEmptyString` | One-time wallet ↔ CNIC binding |
-| `storeVerifiedLandRecord(...)` | Backend | `onlyRole(BACKEND_ROLE)`, `whenNotPaused` | Mints land NFT after off-chain verification |
-| `transferLandOwnership(landId, newOwner, salePrice)` | Owner | `whenNotPaused`, `landMustExist`, `onlyActive` | Direct transfer with sale-price logging |
-| `listLandForSale(landId, price, metaHash)` | Owner | `whenNotPaused`, `landMustExist`, `onlyActive` | Creates 7-day marketplace listing |
-| `updateListingPrice(landId, newPrice)` _(new)_ | Seller | `whenNotPaused` | Adjusts price without resetting deadline |
-| `buyLand(landId)` | Registered or Govt-Authority Buyer | `whenNotPaused`, `nonReentrant`, `landMustExist`, `onlyActive`, `payable` | ETH-settled atomic purchase; refunds excess |
+| `registerUser(name, cnic)` | Citizen | `whenNotPaused`, `boundedString` | One-time wallet ↔ CNIC binding |
+| `storeVerifiedLandRecord(...)` | Minter | `onlyRole(MINTER_ROLE)`, `whenNotPaused`, `nonReentrant`, `boundedString` | Mints land NFT after off-chain verification |
+| `transferLandOwnership(landId, newOwner, salePrice)` | Owner | `whenNotPaused`, `nonReentrant`, `landMustExist`, `onlyActive` | Direct transfer with sale-price logging |
+| `listLandForSale(landId, price, metaHash)` | Owner | `whenNotPaused`, `landMustExist`, `onlyActive`, `boundedString` | Creates 7-day marketplace listing |
+| `updateListingPrice(landId, newPrice)` | Seller | `whenNotPaused` | **Decrease only** — keeps deadline; raises require cancel+relist |
+| `buyLand(landId, maxPrice)` _(maxPrice new in v5)_ | Registered or Govt-Authority Buyer | `whenNotPaused`, `nonReentrant`, `landMustExist`, `onlyActive`, `payable` | ETH-settled atomic purchase; reverts if listing price > `maxPrice`; refunds excess; credits seller via escrow |
+| `withdrawProceeds()` _(new in v5)_ | Any seller with balance | `nonReentrant` _(NOT whenNotPaused)_ | Pull-payment claim of accumulated sale proceeds |
 | `cancelListing(landId)` | Owner | `whenNotPaused` | Removes active listing |
-| `initiateInheritance(...)` | Backend | `onlyRole(BACKEND_ROLE)`, `whenNotPaused`, `landMustExist`, `onlyActive` | Pre-validates inputs, opens succession proposal with fresh nonce |
-| `approveSuccessionPlan(oldLandId)` | Heir | `whenNotPaused` | Vote yes; auto-executes at 100% |
+| `initiateInheritance(...)` | Oracle | `onlyRole(INHERITANCE_ORACLE_ROLE)`, `whenNotPaused`, `landMustExist`, `onlyActive` | Pre-validates inputs (incl. heir ≠ current owner), opens succession proposal with fresh nonce |
+| `approveSuccessionPlan(oldLandId)` | Heir | `whenNotPaused`, `nonReentrant` | Vote yes; auto-executes at 100% |
 | `disputeSuccessionPlan(oldLandId)` | Heir | `whenNotPaused` | Single dispute → permanent lock |
-| `resolveDispute(oldLandId, force)` | Backend | `onlyRole(BACKEND_ROLE)`, `whenNotPaused` | Force-execute or revert to `ACTIVE` |
+| `resolveDispute(oldLandId, force)` | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `nonReentrant` | Force-execute or revert to `ACTIVE` |
 | `setGovtAuthority(wallet, status)` | Admin | `onlyRole(DEFAULT_ADMIN_ROLE)` | Grant/revoke `GOVT_AUTHORITY_ROLE` |
-| `pause()` / `unpause()` _(new)_ | Pauser | `onlyRole(PAUSER_ROLE)` | Halts/resumes all user-facing writes |
-| `emergencyWithdraw(to)` _(new)_ | Admin | `onlyRole(DEFAULT_ADMIN_ROLE)` | Safety net for any stray ETH |
+| `pause()` / `unpause()` | Pauser | `onlyRole(PAUSER_ROLE)` | Halts/resumes user-facing writes |
+| `emergencyWithdraw(to)` | Admin | `onlyRole(DEFAULT_ADMIN_ROLE)`, `nonReentrant` | Sweeps **stray ETH only** (never `_totalPendingWithdrawals`) |
 | `getLandRecord(landId)` | Anyone | view | Public verification |
 | `getAllLandRecordsPaginated(cursor, size)` | Anyone | view | Cursor-based admin pagination |
-| `getInheritanceRequest(landId)` _(new)_ | Anyone | view | Returns full proposal incl. arrays |
-| `hasHeirApproved(landId, heir)` _(new)_ | Anyone | view | Per-nonce vote check |
+| `getInheritanceRequest(landId)` | Anyone | view | Returns full proposal incl. arrays |
+| `hasHeirApproved(landId, heir)` | Anyone | view | Per-nonce vote check |
+| `pendingProceeds(account)` _(new in v5)_ | Anyone | view | Pull-payment balance for a seller |
+| `totalPendingWithdrawals()` _(new in v5)_ | Anyone | view | Total ETH credited but unwithdrawn (transparency) |
 
 ### Events Emitted
 
@@ -549,16 +568,18 @@ event UserRegistered(address indexed user, string name, string cnic);
 event LandMinted(address indexed owner, string indexed landId, LandType lType, uint256 tokenId);
 event LandTransferred(string indexed landId, address indexed from, address indexed to, uint256 price);
 event LandListed(string indexed landId, uint256 price, address indexed seller, string metadataHash);
-event ListingPriceUpdated(string indexed landId, uint256 oldPrice, uint256 newPrice);   // new
+event ListingPriceUpdated(string indexed landId, uint256 oldPrice, uint256 newPrice);
 event ListingCancelled(string indexed landId);
 event LandSold(string indexed landId, address indexed buyer, address indexed seller, uint256 price);
+event ProceedsCredited(address indexed seller, uint256 amount);          // v5
+event ProceedsWithdrawn(address indexed seller, uint256 amount);         // v5
 event InheritanceInitiated(string indexed oldLandId, uint256 totalHeirs, uint256 proposalNonce);
 event HeirApproved(string indexed oldLandId, address indexed heir, uint256 proposalNonce);
 event InheritanceDisputed(string indexed oldLandId, address indexed heir, uint256 proposalNonce);
 event InheritanceFinalized(string indexed oldLandId, uint256 proposalNonce);
-event DisputeResolved(string indexed oldLandId, bool forceExecuted);   // new
+event DisputeResolved(string indexed oldLandId, bool forceExecuted);
 event LandStatusChanged(string indexed landId, LandStatus status);
-event EmergencyWithdrawal(address indexed to, uint256 amount);          // new
+event EmergencyWithdrawal(address indexed to, uint256 amount);
 // AccessControl also emits RoleGranted / RoleRevoked / RoleAdminChanged.
 // Pausable emits Paused / Unpaused.
 ```
@@ -577,18 +598,22 @@ error LandRegistry__DuplicateNewLandId(string landId);
 // ...full list in contract.sol
 ```
 
-### Access Control Matrix (Role-Based)
+### Access Control Matrix (Role-Separated in v5)
 
-| Role | Can Mint | Can Transfer | Can List/Buy | Can Initiate Inheritance | Can Resolve Dispute | Can Set Govt Authority | Can Pause |
+| Role | Mint | Transfer | List / Buy | Initiate Inheritance | Resolve Dispute | Set Govt Authority | Pause |
 |------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | `DEFAULT_ADMIN_ROLE` | ❌ | ✅ (own land) | ✅ | ❌ | ❌ | ✅ | ❌ |
-| `BACKEND_ROLE` | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ |
+| `MINTER_ROLE` _(v5)_ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `INHERITANCE_ORACLE_ROLE` _(v5)_ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| `DISPUTE_ARBITER_ROLE` _(v5)_ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
 | `GOVT_AUTHORITY_ROLE` | ❌ | ✅ (own land) | ✅ (buy + sell) | ❌ | ❌ | ❌ | ❌ |
 | `PAUSER_ROLE` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Registered Citizen | ❌ | ✅ (own land) | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Unregistered Wallet | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
-> All roles are independently grantable/revocable via the OZ `AccessControl` API — no role is immutable. A single wallet may hold multiple roles (e.g., deployer starts with both `DEFAULT_ADMIN_ROLE` and `PAUSER_ROLE`).
+> **Role separation rationale:** v4 bundled mint + inheritance + dispute resolution into a single `BACKEND_ROLE`. A leaked key compromised all three. In v5 each privileged off-chain service can hold the narrowest possible authority — e.g., the minting daemon never needs (and so should never hold) the power to force-execute disputes. The constructor grants all three oracle roles to the `backend` argument for backward compatibility; the admin should `revokeRole` the ones each operator doesn't need post-deploy.
+
+> **All roles are independently grantable/revocable** via the OZ `AccessControl` API. **`DEFAULT_ADMIN_ROLE` should be held by a multisig** (Safe / Gnosis) in production — a single-key admin defeats the role separation by definition.
 
 ### Lifecycle State Machine
 
@@ -866,21 +891,36 @@ ADMIN_PRIVATE_KEY=0xYOUR_ADMIN_WALLET_PRIVATE_KEY
 
 > ⚠️ **Security:** `ADMIN_PRIVATE_KEY` belongs to the wallet set as `verificationBackend` during contract deployment. Never commit it. Never expose it to the client.
 
-### Step 4 — Re-Deploy the Smart Contract (required for v4)
+### Step 4 — Re-Deploy the Smart Contract (required for v5)
 
-> ⚠️ **The Sepolia contract at `0xd2a855a8fC38d4E0a871319d5882E696155d1253` is the legacy v3 source.** The v4 audit-grade refactor in `contract.sol` has a different ABI (new functions, renamed accessors, custom errors, role-based access control) and must be redeployed before the frontend can use it.
+> ⚠️ **The Sepolia contract at `0xd2a855a8fC38d4E0a871319d5882E696155d1253` is the legacy v3 source.** The v5 security-hardened source in `contract.sol` has a different ABI (split roles, new `maxPrice` parameter on `buyLand`, pull-payment functions, decrease-only price update, custom errors) and must be redeployed before the frontend can use it.
 
 ```bash
 # In Remix IDE or your Hardhat / Foundry project:
 # 1. Install OZ contracts:        npm i @openzeppelin/contracts@^5
 # 2. Compile contract.sol with    solc 0.8.24 (pinned)
 # 3. Deploy with constructor arg: backend = <wallet that will sign /api/* calls>
-#                                 (deployer becomes DEFAULT_ADMIN_ROLE + PAUSER_ROLE)
-# 4. Post-deploy admin tasks:
-#    - setGovtAuthority(<dev/inst wallet>, true)  for each institutional holder
-#    - (optional) grantRole(PAUSER_ROLE, <ops wallet>)
+#                                 The deployer becomes DEFAULT_ADMIN_ROLE + PAUSER_ROLE.
+#                                 `backend` initially gets MINTER_ROLE +
+#                                 INHERITANCE_ORACLE_ROLE + DISPUTE_ARBITER_ROLE
+#                                 (matches v4 behavior).
+# 4. Post-deploy hardening tasks (recommended order):
+#    a. Transfer DEFAULT_ADMIN_ROLE to a multisig (Gnosis Safe) — single-key
+#       admin defeats role separation.
+#    b. grantRole(PAUSER_ROLE, <ops wallet>)
+#    c. setGovtAuthority(<dev/inst wallet>, true)  for each institutional holder.
+#    d. (Optional but strongly recommended) split the oracle roles:
+#       - Keep MINTER_ROLE on the minting daemon's key.
+#       - Move INHERITANCE_ORACLE_ROLE + DISPUTE_ARBITER_ROLE to separate
+#         operator wallets. Then revokeRole for each role you no longer
+#         want on the original `backend` wallet.
 # 5. Update CONTRACT_ADDRESS in src/utils/contract.ts
 # 6. Regenerate the ABI in src/utils/contract.ts from the new artifact
+# 7. Frontend changes needed for v5:
+#    - buyLand calls must pass maxPrice (typically =listing.price)
+#    - After a buyLand confirms, the seller's UI should expose a
+#      "Withdraw proceeds" button calling withdrawProceeds()
+#    - updateListingPrice will revert if newPrice >= currentPrice
 ```
 
 ### Step 5 — Run the Dev Server
@@ -956,28 +996,32 @@ npm run lint      # Run ESLint
 
 ## 🔐 Security Considerations
 
-| Threat | Mitigation (v4) |
-|--------|----------------|
-| **Reentrancy** in `buyLand` | (1) Strict Checks-Effects-Interactions — listing `delete`d before ETH send. (2) `ReentrancyGuard.nonReentrant` modifier as a belt-and-suspenders second layer. |
-| **Unauthorized Minting** | `onlyRole(BACKEND_ROLE)` via OZ `AccessControl` — rotatable so a leaked key can be recovered from. |
-| **Compromised Backend Key** | `BACKEND_ROLE` is rotatable (`grantRole` / `revokeRole`). Compare to v3 where `verificationBackend` was `immutable` and a leak bricked the contract. |
-| **Active Exploit Discovered** | Any `PAUSER_ROLE` holder can `pause()` — halts every user-facing write while reads stay available. |
+| Threat | Mitigation (v5) |
+|--------|-----------------|
+| **Reentrancy** anywhere | OZ `ReentrancyGuard.nonReentrant` applied to **every** state-mutating function that touches NFT transfers or ETH (`storeVerifiedLandRecord`, `transferLandOwnership`, `buyLand`, `withdrawProceeds`, `approveSuccessionPlan`, `resolveDispute`, `emergencyWithdraw`). Strict CEI ordering on top. |
+| **Malicious-Seller Griefing of `buyLand`** _(NEW MITIGATION)_ | **Pull-payment escrow.** Sale proceeds are credited to `_pendingWithdrawals[seller]` rather than pushed. A reverting `receive()` on the seller's contract can no longer make the buyer's `buyLand` fail. Seller withdraws separately via `withdrawProceeds()`. |
+| **Seller-Side Front-Running** _(NEW MITIGATION)_ | **`maxPrice` parameter on `buyLand`** — buyer signs with their expected price; tx reverts if listing price moved. **`updateListingPrice` allows decrease only** — raising requires the more visible `cancelListing` + `listLandForSale` (which resets the 7-day clock). |
+| **Compromised Privileged Key** | **Role separation** — `MINTER_ROLE`, `INHERITANCE_ORACLE_ROLE`, `DISPUTE_ARBITER_ROLE` are independent. Compromise of one no longer exposes the others. All three are rotatable via `AccessControl`. |
+| **Active Exploit Discovered** | `PAUSER_ROLE` can `pause()` instantly. **Critically: `withdrawProceeds` is NOT `whenNotPaused`** — pause halts new operations without trapping seller balances. |
+| **Malicious Admin Draining Funds** _(NEW MITIGATION)_ | `_totalPendingWithdrawals` is tracked; `emergencyWithdraw` can sweep ONLY `address(this).balance - _totalPendingWithdrawals`. Even an actively malicious admin cannot use it to steal user balances. |
+| **Gas Griefing via Huge Strings** _(NEW MITIGATION)_ | Every user-supplied string is bounded at `MAX_STRING_LENGTH = 256` bytes via the `boundedString` modifier. |
 | **Private Key Exposure** | `ADMIN_PRIVATE_KEY` lives only on the Next.js server (Node runtime); never prefixed with `NEXT_PUBLIC_`; never reaches the browser bundle. |
 | **CNIC Duplication** | `_cnicToAddress` mapping enforces one-CNIC-one-wallet at registration time. |
 | **Land ID Collision** | `_landExists[landId]` check at every mint; deterministic `tokenId = keccak256(landId)` makes collisions cryptographically infeasible. |
-| **Stuck Overpayment** | `buyLand` refunds `msg.value - price` to the buyer; `emergencyWithdraw` exists as a final safety net for any stray ETH. |
-| **Stale-Listing Exploit** | `_update` override auto-clears any active listing on every NFT move (transfer or burn) — prevents the "Alice listed → transferred to Bob → Eve buys from Alice's stale listing" foot-gun. |
-| **Front-Running on Marketplace** | Sale price is fixed in the listing — buyer cannot be sniped at a different price. |
-| **Locked Funds (failed ETH transfer)** | `(bool ok, ) = .call{value}("")` + custom error `EthTransferFailed` — reverts the entire purchase if seller is a malicious contract. |
-| **Inheritance Forgery** | Only `BACKEND_ROLE` can `initiateInheritance`; only addresses registered in `_isHeirFor[landId][nonce]` can vote; 100% approval required. |
-| **Inheritance DoS** | All inputs pre-validated at `initiate` time (no duplicate heirs, no duplicate new-landIds, no collisions, no zero-addresses, no unauthorized heirs) — the final vote can never revert on data the backend supplied. |
-| **Stale Vote Re-use** | Every `initiateInheritance` bumps `proposalNonce`; all vote/membership state is scoped to that nonce, so reissued plans get fresh state. |
-| **Dispute Deadlock** | Backend `resolveDispute(force)` provides a legal-fallback escape hatch (verifiable on-chain via `DisputeResolved` event). |
+| **Stuck Overpayment** | `buyLand` refunds `msg.value - price` to the buyer via `Address.sendValue`. |
+| **Stale-Listing Exploit** | `_update` override auto-clears any active listing on every NFT move (transfer or burn). |
+| **Locked Funds (failed ETH transfer)** | `Address.sendValue` reverts with a descriptive reason if the recipient cannot accept the transfer — uniform handling. |
+| **Inheritance Forgery** | Only `INHERITANCE_ORACLE_ROLE` can `initiateInheritance`; only addresses registered in `_isHeirFor[landId][nonce]` can vote; 100% approval required. |
+| **Self-Inheritance** _(NEW MITIGATION)_ | `_validateInheritanceInputs` rejects any heir equal to the plot's current owner — the deceased can never be their own heir. |
+| **Inheritance DoS** | All inputs pre-validated at `initiate` time (no duplicate heirs, no duplicate new-landIds, no collisions with existing land, no zero-addresses, no unauthorized heirs, no oversize strings) — the final vote can never revert on data the oracle supplied. |
+| **Stale Vote Re-use** | Every `initiateInheritance` bumps `proposalNonce`; all vote/membership state is scoped to that nonce. |
+| **Dispute Deadlock** | `DISPUTE_ARBITER_ROLE` can `resolveDispute(force)` — verifiable on-chain via `DisputeResolved` event. |
 | **Self-Transfer Abuse** | `newOwner != msg.sender` + `msg.sender != listing.seller` enforced via custom errors. |
 | **Hydration Mismatch** | Every wallet-aware page defers render until after `mount` — prevents SSR-leaked state. |
 | **Pinata Key Exposure** ⚠️ | Currently `NEXT_PUBLIC_*` (known limitation — see *Future Work*). |
 | **No Re-org Protection** | Standard 12-block confirmation wait via `useWaitForTransactionReceipt`. |
 | **CNIC Plaintext on Public Chain** ⚠️ | Stored as plaintext strings (a public-chain limitation, not fixable at this layer). Production deployment should use a hash commitment or zero-knowledge CNIC proof — listed in *Future Work*. |
+| **Single-Key Admin** ⚠️ | `DEFAULT_ADMIN_ROLE` can grant/revoke any role. **Production should hold this in a multisig** — a single-key admin defeats the role separation. The contract does not enforce this; it's an operational requirement. |
 
 ### Threat Model Diagram
 
@@ -1083,6 +1127,7 @@ flowchart LR
 | 13 | **Half-decentralized marketplace** — v1/v2 stored listings in a Supabase DB, undermining the trust story (admin could silently delete listings) | **v3:** removed the marketplace DB entirely. Added `metadataHash` field to the on-chain `Listing` struct; photos + JSON metadata are pinned to IPFS in `CreateListingModal`; the chain stores the CID. Now nothing in the marketplace path requires trusting a centralised database. |
 | 14 | **ERC-721 metadata standard compliance** — earlier prototypes stored just the deed CID on-chain, breaking marketplace integrations (OpenSea etc.) | `DigitizationModal` now builds a proper ERC-721 metadata JSON `{name, image, attributes[], documents[]}`, pins that to IPFS, and stores its CID on-chain. The deed file is referenced via the JSON's `image` and `documents[]` fields. |
 | 15 | **v3 contract had 11 audit-class issues** — stuck overpayments in `buyLand`, stale listings after direct transfer, stale `hasApproved` after dispute reset, duplicate-heir deadlock, last-vote DoS on landId collision, immutable backend (no rotation), no pause mechanism, no reentrancy guard, no event on govt-authority changes, govt authority couldn't buy on marketplace, deceased's owner-index not cleaned on burn | **v4 refactor:** swapped `Ownable` for `AccessControl` (3 rotatable roles), added `Pausable` + `ReentrancyGuard`, introduced `proposalNonce` for inheritance vote scoping, pre-validated all inheritance inputs, overrode `_update` to auto-clear stale listings, refunded buyer overpays, replaced every `require` string with custom errors, added `LandStatus.INHERITED` terminal state, added `updateListingPrice`. See *Bugs Fixed in v4* table above. |
+| 16 | **v4 still had structural security weaknesses** — push payments in `buyLand` could be griefed by malicious-seller `receive()`; `BACKEND_ROLE` bundled mint + inheritance + dispute (compromise = full powers); `updateListingPrice` allowed silent raises enabling seller-side front-running; `buyLand` had no buyer-side price-slippage guard; `nonReentrant` was only on `buyLand` (not on other NFT-callback paths); user strings had no length cap; `emergencyWithdraw` could theoretically drain seller escrow | **v5 security hardening:** pull-payment escrow (`_pendingWithdrawals` + `withdrawProceeds`); role separation into `MINTER_ROLE` / `INHERITANCE_ORACLE_ROLE` / `DISPUTE_ARBITER_ROLE`; `maxPrice` parameter on `buyLand`; decrease-only `updateListingPrice`; `nonReentrant` on every NFT-mutating external function; `MAX_STRING_LENGTH` cap + `boundedString` modifier; `_totalPendingWithdrawals` accounting protects seller escrow from `emergencyWithdraw`; `withdrawProceeds` not gated by `pause`; heir ≠ current owner sanity check; `Address.sendValue` for all outgoing ETH. |
 
 ---
 
