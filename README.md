@@ -6,7 +6,7 @@
 
 > **Fully on-chain marketplace** — listings, prices, photos, and metadata all live on the blockchain or IPFS. **No off-chain database is in the trust path.** A single Supabase instance simulates the legacy government civil registry purely as a verification *input*, not a source of truth.
 
-[![Solidity](https://img.shields.io/badge/Solidity-%5E0.8.20-363636?logo=solidity)](https://soliditylang.org/)
+[![Solidity](https://img.shields.io/badge/Solidity-0.8.24-363636?logo=solidity)](https://soliditylang.org/)
 [![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)](https://nextjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript)](https://www.typescriptlang.org/)
@@ -67,7 +67,7 @@
 | **Submission Year** | 2026 |
 | **Project Duration** | 8 months (Sept 2025 — May 2026) |
 | **Deployed Network** | Ethereum Sepolia Testnet |
-| **Deployed Contract** | [`0xd2a855a8fC38d4E0a871319d5882E696155d1253`](https://sepolia.etherscan.io/address/0xd2a855a8fC38d4E0a871319d5882E696155d1253) |
+| **Deployed Contract** | [`0xd2a855a8fC38d4E0a871319d5882E696155d1253`](https://sepolia.etherscan.io/address/0xd2a855a8fC38d4E0a871319d5882E696155d1253) — _legacy v3 contract; the audit-grade v4 source in `contract.sol` requires redeployment before the frontend can use it (see §Smart Contract Design)_ |
 
 ---
 
@@ -184,8 +184,8 @@ By encoding allotments as **ERC-721 NFTs**, each plot becomes a unique, non-forg
 | Tech | Version | Why Chosen |
 |------|---------|------------|
 | **Ethereum (Sepolia)** | — | Most mature smart-contract platform; Sepolia is the canonical PoS testnet with reliable faucets and free RPC. |
-| **Solidity** | `^0.8.20` | Built-in overflow checks, custom errors, and modern features (transient storage, etc.). |
-| **OpenZeppelin Contracts** | `^5.0` | Battle-tested `ERC721` and `Ownable` implementations — avoids reinventing audited primitives. |
+| **Solidity** | `0.8.24` | Pinned (not floating) for reproducible bytecode. Built-in overflow checks, custom errors, transient storage, and `bytes.concat` available. |
+| **OpenZeppelin Contracts** | `^5.0` | `ERC721`, `AccessControl`, `Pausable`, `ReentrancyGuard` — battle-tested primitives instead of hand-rolled access control or pause logic. |
 | **ERC-721** | — | Each land parcel is a unique non-fungible token (NFT). Perfect semantic fit for unique real-world assets. |
 
 ### 🎨 Frontend
@@ -494,74 +494,154 @@ flowchart TD
 
 ## 📜 Smart Contract Design
 
-### Single Contract: `LandRegistry.sol`
+### Single Contract: `LandRegistry.sol` — _v4 Audit-Grade Architecture_
 
-The system intentionally consolidates all logic into a single contract to minimize cross-contract calls and gas overhead. Modules are organized via section comments.
+The system intentionally consolidates all logic into a single contract to minimize cross-contract calls and gas overhead. Modules are organized via section comments and follow the canonical Solidity layout order (errors → types → state → events → modifiers → constructor → external → internal → views).
+
+**v4 inherits from four OpenZeppelin primitives instead of one:**
+
+| Inherited | Why |
+|-----------|-----|
+| `ERC721` | Land NFT semantics |
+| `AccessControl` | Rotatable role-based permissions (replaces immutable `verificationBackend`) |
+| `Pausable` | Emergency pause on every user-facing write |
+| `ReentrancyGuard` | Belt-and-suspenders on `buyLand` in addition to strict CEI |
 
 | Module | Purpose |
 |--------|---------|
-| **Identity** | `registerUser`, `users`, `cnicToAddress` |
-| **Land Data** | `storeVerifiedLandRecord`, `landRecords`, `landExists` |
-| **NFT (ERC-721)** | Inherits OpenZeppelin `ERC721`; deterministic `tokenId = keccak256(landId)` |
-| **Marketplace** | `listLandForSale`, `buyLand`, `cancelListing`, `landListings` |
-| **Inheritance** | `initiateInheritance`, `approveSuccessionPlan`, `disputeSuccessionPlan`, `resolveDispute`, `_executeInheritance` |
-| **Indexing** | `allLandIds`, `ownerToLands`, `getAllLandRecordsPaginated` |
-| **Access Control** | `Ownable`, `onlyBackend`, `onlyActive`, `landMustExist`, `isGovtAuthority` |
+| **Identity** | `registerUser`, `getUser`, `cnicToAddress` |
+| **Land Data** | `storeVerifiedLandRecord`, `getLandRecord`, `landExists` (private) |
+| **NFT (ERC-721)** | OpenZeppelin `ERC721`; deterministic `tokenId = keccak256(landId)`; `_update` hook auto-clears stale listings on every transfer |
+| **Marketplace** | `listLandForSale`, `updateListingPrice` _(new)_, `buyLand`, `cancelListing`, `getListing` |
+| **Inheritance** | `initiateInheritance`, `approveSuccessionPlan`, `disputeSuccessionPlan`, `resolveDispute`, `getInheritanceRequest`, `hasHeirApproved` |
+| **Indexing** | `_allLandIds`, `_ownerToLands`, `getAllLandRecordsPaginated`, `getLandsByOwner`, `totalLandRecords` |
+| **Access Control** | `DEFAULT_ADMIN_ROLE`, `BACKEND_ROLE`, `GOVT_AUTHORITY_ROLE`, `PAUSER_ROLE` (all via `AccessControl`) |
+| **Lifecycle** | `pause`, `unpause`, `emergencyWithdraw`, `setGovtAuthority` |
 | **Transfers** | `transferLandOwnership`, `OwnershipHistory[]` log |
 
 ### Key Functions
 
 | Function | Caller | Modifier(s) | Description |
 |----------|--------|-------------|-------------|
-| `registerUser(name, cnic)` | Citizen | — | One-time wallet ↔ CNIC binding |
-| `storeVerifiedLandRecord(...)` | Backend | `onlyBackend` | Mints land NFT after off-chain verification |
-| `transferLandOwnership(landId, newOwner, salePrice)` | Owner | `landMustExist`, `onlyActive` | Direct transfer with sale-price logging |
-| `listLandForSale(landId, price, metaHash)` | Owner | `onlyActive` | Creates 7-day marketplace listing |
-| `buyLand(landId)` | Registered Buyer | `landMustExist`, `onlyActive`, `payable` | ETH-settled atomic purchase |
-| `cancelListing(landId)` | Owner | — | Removes active listing |
-| `initiateInheritance(...)` | Backend | `onlyBackend`, `onlyActive` | Locks land, opens succession proposal |
-| `approveSuccessionPlan(oldLandId)` | Heir | — | Vote yes; auto-executes at 100% |
-| `disputeSuccessionPlan(oldLandId)` | Heir | — | Single dispute → permanent lock |
-| `resolveDispute(oldLandId, force)` | Backend | `onlyBackend` | Force-execute or revert to ACTIVE |
-| `setGovtAuthority(wallet, status)` | Owner | `onlyOwner` | Whitelist institutional wallets |
+| `registerUser(name, cnic)` | Citizen | `whenNotPaused`, `nonEmptyString` | One-time wallet ↔ CNIC binding |
+| `storeVerifiedLandRecord(...)` | Backend | `onlyRole(BACKEND_ROLE)`, `whenNotPaused` | Mints land NFT after off-chain verification |
+| `transferLandOwnership(landId, newOwner, salePrice)` | Owner | `whenNotPaused`, `landMustExist`, `onlyActive` | Direct transfer with sale-price logging |
+| `listLandForSale(landId, price, metaHash)` | Owner | `whenNotPaused`, `landMustExist`, `onlyActive` | Creates 7-day marketplace listing |
+| `updateListingPrice(landId, newPrice)` _(new)_ | Seller | `whenNotPaused` | Adjusts price without resetting deadline |
+| `buyLand(landId)` | Registered or Govt-Authority Buyer | `whenNotPaused`, `nonReentrant`, `landMustExist`, `onlyActive`, `payable` | ETH-settled atomic purchase; refunds excess |
+| `cancelListing(landId)` | Owner | `whenNotPaused` | Removes active listing |
+| `initiateInheritance(...)` | Backend | `onlyRole(BACKEND_ROLE)`, `whenNotPaused`, `landMustExist`, `onlyActive` | Pre-validates inputs, opens succession proposal with fresh nonce |
+| `approveSuccessionPlan(oldLandId)` | Heir | `whenNotPaused` | Vote yes; auto-executes at 100% |
+| `disputeSuccessionPlan(oldLandId)` | Heir | `whenNotPaused` | Single dispute → permanent lock |
+| `resolveDispute(oldLandId, force)` | Backend | `onlyRole(BACKEND_ROLE)`, `whenNotPaused` | Force-execute or revert to `ACTIVE` |
+| `setGovtAuthority(wallet, status)` | Admin | `onlyRole(DEFAULT_ADMIN_ROLE)` | Grant/revoke `GOVT_AUTHORITY_ROLE` |
+| `pause()` / `unpause()` _(new)_ | Pauser | `onlyRole(PAUSER_ROLE)` | Halts/resumes all user-facing writes |
+| `emergencyWithdraw(to)` _(new)_ | Admin | `onlyRole(DEFAULT_ADMIN_ROLE)` | Safety net for any stray ETH |
 | `getLandRecord(landId)` | Anyone | view | Public verification |
 | `getAllLandRecordsPaginated(cursor, size)` | Anyone | view | Cursor-based admin pagination |
+| `getInheritanceRequest(landId)` _(new)_ | Anyone | view | Returns full proposal incl. arrays |
+| `hasHeirApproved(landId, heir)` _(new)_ | Anyone | view | Per-nonce vote check |
 
 ### Events Emitted
 
 ```solidity
 event UserRegistered(address indexed user, string name, string cnic);
-event LandMinted(address indexed owner, string landId, LandType lType, uint256 tokenId);
-event LandTransferred(string landId, address indexed from, address indexed to, uint256 price);
-event LandListed(string landId, uint256 price, address seller, string metadataHash);
-event LandSold(string landId, address buyer, uint256 price);
-event ListingCancelled(string landId);
-event InheritanceInitiated(string oldLandId, uint256 totalHeirs);
-event HeirApproved(string oldLandId, address indexed heir);
-event InheritanceDisputed(string oldLandId, address indexed heir);
-event InheritanceFinalized(string oldLandId);
-event LandStatusChanged(string landId, LandStatus status);
+event LandMinted(address indexed owner, string indexed landId, LandType lType, uint256 tokenId);
+event LandTransferred(string indexed landId, address indexed from, address indexed to, uint256 price);
+event LandListed(string indexed landId, uint256 price, address indexed seller, string metadataHash);
+event ListingPriceUpdated(string indexed landId, uint256 oldPrice, uint256 newPrice);   // new
+event ListingCancelled(string indexed landId);
+event LandSold(string indexed landId, address indexed buyer, address indexed seller, uint256 price);
+event InheritanceInitiated(string indexed oldLandId, uint256 totalHeirs, uint256 proposalNonce);
+event HeirApproved(string indexed oldLandId, address indexed heir, uint256 proposalNonce);
+event InheritanceDisputed(string indexed oldLandId, address indexed heir, uint256 proposalNonce);
+event InheritanceFinalized(string indexed oldLandId, uint256 proposalNonce);
+event DisputeResolved(string indexed oldLandId, bool forceExecuted);   // new
+event LandStatusChanged(string indexed landId, LandStatus status);
+event EmergencyWithdrawal(address indexed to, uint256 amount);          // new
+// AccessControl also emits RoleGranted / RoleRevoked / RoleAdminChanged.
+// Pausable emits Paused / Unpaused.
 ```
 
-### Access Control Matrix
+### Custom Errors
 
-| Role | Can Mint | Can Transfer | Can List/Buy | Can Initiate Inheritance | Can Set Govt Authority |
-|------|:---:|:---:|:---:|:---:|:---:|
-| Contract Owner | ❌ | ✅ (own land) | ✅ | ❌ | ✅ |
-| Verification Backend | ✅ | ❌ | ❌ | ✅ | ❌ |
-| Govt Authority | ❌ | ✅ (own land) | ✅ | ❌ | ❌ |
-| Registered Citizen | ❌ | ✅ (own land) | ✅ | ❌ | ❌ |
-| Unregistered Wallet | ❌ | ❌ | ❌ | ❌ | ❌ |
+v4 replaces every `require` string with a typed custom error (saves ~50 gas per revert and gives callers a machine-parseable failure mode). Examples:
+
+```solidity
+error LandRegistry__NotAuthorizedHolder(address account);
+error LandRegistry__LandAlreadyExists(string landId);
+error LandRegistry__LandNotActive(string landId);
+error LandRegistry__InsufficientPayment(uint256 sent, uint256 required);
+error LandRegistry__DuplicateHeir(address heir);
+error LandRegistry__DuplicateNewLandId(string landId);
+// ...full list in contract.sol
+```
+
+### Access Control Matrix (Role-Based)
+
+| Role | Can Mint | Can Transfer | Can List/Buy | Can Initiate Inheritance | Can Resolve Dispute | Can Set Govt Authority | Can Pause |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `DEFAULT_ADMIN_ROLE` | ❌ | ✅ (own land) | ✅ | ❌ | ❌ | ✅ | ❌ |
+| `BACKEND_ROLE` | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ |
+| `GOVT_AUTHORITY_ROLE` | ❌ | ✅ (own land) | ✅ (buy + sell) | ❌ | ❌ | ❌ | ❌ |
+| `PAUSER_ROLE` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Registered Citizen | ❌ | ✅ (own land) | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Unregistered Wallet | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+> All roles are independently grantable/revocable via the OZ `AccessControl` API — no role is immutable. A single wallet may hold multiple roles (e.g., deployer starts with both `DEFAULT_ADMIN_ROLE` and `PAUSER_ROLE`).
+
+### Lifecycle State Machine
+
+```
+                ┌──────────────────────────┐
+                ▼                          │
+┌──────────┐         initiateInheritance   │
+│  ACTIVE  │ ──────────────────────────────┤
+└─────┬────┘                               │
+      │                                    ▼
+      │                       ┌────────────────────────┐
+      │     all heirs approve │  PENDING_INHERITANCE   │
+      │     ┌─────────────────┤                        │
+      │     │                 └──────────┬─────────────┘
+      ▼     ▼                            │ any heir
+┌──────────────┐                         │ disputes
+│  INHERITED   │  ◄──── force-execute    ▼
+│  (terminal)  │  ◄──┐         ┌─────────────────┐
+└──────────────┘     └─────────┤ LOCKED_DISPUTE  │
+                               └─────────┬───────┘
+                                         │ resolveDispute(false)
+                                         ▼
+                                       ACTIVE (loop back)
+```
 
 ### Gas Optimization Techniques
 
-1. **Manual `tokenId ↔ landId` mapping** instead of `ERC721URIStorage` — skips per-token string storage.
-2. **Deterministic `tokenId = keccak256(landId)`** — no counter SSTORE on mint.
-3. **`immutable verificationBackend`** — saves SLOAD on every backend call.
-4. **Swap-and-pop** in `_removeFromOwnerList` — O(1) removal vs O(n) array shift.
-5. **`delete listing` before ETH send** — checks-effects-interactions pattern; also reclaims gas via storage refund.
-6. **Cursor-based pagination** instead of returning the full `allLandIds[]` array — bounds gas per query.
-7. **Custom `enum`s for status/type** — packed into a single storage slot.
+1. **Pinned `solc 0.8.24`** with reproducible bytecode + custom errors throughout (saves ~50 gas/revert).
+2. **Manual `tokenId ↔ landId` mapping** instead of `ERC721URIStorage` — skips per-token string storage.
+3. **Deterministic `tokenId = keccak256(landId)`** — no counter SSTORE on mint.
+4. **`uint64` timestamps + deadlines** — packed into shared slots with adjacent fields.
+5. **Swap-and-pop** in `_removeFromOwnerList` — O(1) removal vs. O(n) array shift.
+6. **CEI ordering**: `delete listing` *before* ETH send; storage refunds reclaim gas.
+7. **O(1) heir-membership lookup** via `_isHeirFor[landId][nonce][addr]` — replaces the original's per-vote linear scan.
+8. **Cursor-based pagination** instead of returning the full `allLandIds[]` array — bounds gas per query.
+9. **`unchecked { ++i; }`** loop counters where overflow is impossible (post-`MAX_HEIRS=50` validation).
+10. **Custom `enum`s** for status/type — packed into a single storage slot.
+
+### Bugs Fixed in v4 (vs. legacy v3 contract on Sepolia)
+
+| # | Legacy bug | v4 fix |
+|---|------------|--------|
+| 1 | `buyLand` accepted `msg.value >= price` but never refunded the excess — overpayments were trapped in the contract forever | Refunds `msg.value - price` to the buyer at the end of `buyLand`; added `emergencyWithdraw` as a safety net |
+| 2 | `_executeInheritance` burned the old NFT but never called `_removeFromOwnerList(oldOwner, oldLandId)` — `getLandsByCnic(deceased)` kept returning the dead landId | Old owner's index is cleaned up; old land is marked `INHERITED` so it's distinguishable from active land |
+| 3 | After `resolveDispute(force=false)`, the `hasApproved` mapping from the previous round persisted — heirs who voted on the bad plan were permanently blocked from voting on the corrected one | `proposalNonce` is bumped on every `initiateInheritance`; all vote/membership state is scoped to that nonce |
+| 4 | Duplicate addresses in `heirs[]` deadlocked the proposal (an address can only vote once but contributes 2 to `heirs.length`) | Duplicate heirs are rejected at `initiateInheritance` |
+| 5 | If any `newLandIds[i]` collided with an existing land, the *final voter's* tx reverted — the proposal could never reach execution | All collisions are pre-validated at initiate time |
+| 6 | `verificationBackend` was `immutable` — a leaked key bricked the contract | `BACKEND_ROLE` is rotatable via `AccessControl` |
+| 7 | `transferLandOwnership` left active listings stale — a buyer could send ETH to the *previous* seller while the *current* owner lost the NFT | `_update` override auto-clears any active listing on every NFT move (transfer or burn) |
+| 8 | Govt-authority wallets couldn't buy via the marketplace (only registered citizens could) | `buyLand` accepts any `_isAuthorizedHolder` (citizen or govt) |
+| 9 | No way to adjust listing price without cancelling + relisting (which reset the 7-day clock) | New `updateListingPrice` keeps the deadline |
+| 10 | No reentrancy guard, no pause mechanism, no emergency withdraw | `nonReentrant` on `buyLand`, `Pausable` on every user write, `emergencyWithdraw` for stuck ETH |
+| 11 | `setGovtAuthority` emitted no event — indexers couldn't observe whitelist changes | `AccessControl` natively emits `RoleGranted` / `RoleRevoked` |
 
 ---
 
@@ -677,11 +757,18 @@ erDiagram
 ### On-Chain Data (Source of Truth)
 
 ```solidity
-struct LandRecord       { address currentOwner; string cnic; string landId; string ipfsHash; LandType landType; LandStatus status; uint256 verifiedAt; }
+enum LandType   { RESIDENTIAL, AGRICULTURAL, COMMERCIAL }
+enum LandStatus { ACTIVE, PENDING_INHERITANCE, LOCKED_DISPUTE, INHERITED }
+
+struct LandRecord       { address currentOwner; string cnic; string landId; string ipfsHash; LandType landType; LandStatus status; uint64 verifiedAt; }
 struct UserProfile      { string name; string cnic; bool isRegistered; }
-struct Listing          { uint256 price; address seller; bool isActive; uint256 deadline; string metadataHash; }
-struct OwnershipHistory { address owner; uint256 timestamp; uint256 price; }
-struct InheritanceRequest { address[] heirs; string[] newLandIds; string[] newIpfsHashes; uint256 approvalCount; bool isExecuted; mapping(address => bool) hasApproved; }
+struct Listing          { uint256 price; address seller; bool isActive; uint64 deadline; string metadataHash; }
+struct OwnershipHistory { address owner; uint64 timestamp; uint256 price; }
+struct InheritanceRequest { address[] heirs; string[] newLandIds; string[] newIpfsHashes; uint256 approvalCount; bool isExecuted; uint256 proposalNonce; }
+// Vote and heir-membership ledgers live in separate mappings keyed by proposalNonce
+// so re-issued proposals (after a dispute reset) get fresh state:
+//   mapping(string => mapping(uint256 => mapping(address => bool))) _heirApproved;
+//   mapping(string => mapping(uint256 => mapping(address => bool))) _isHeirFor;
 ```
 
 ### Off-Chain Data (Single Govt Supabase — *mock*)
@@ -779,15 +866,21 @@ ADMIN_PRIVATE_KEY=0xYOUR_ADMIN_WALLET_PRIVATE_KEY
 
 > ⚠️ **Security:** `ADMIN_PRIVATE_KEY` belongs to the wallet set as `verificationBackend` during contract deployment. Never commit it. Never expose it to the client.
 
-### Step 4 — (Optional) Re-Deploy the Smart Contract
+### Step 4 — Re-Deploy the Smart Contract (required for v4)
 
-The contract is already deployed at [`0xd2a855a8fC38d4E0a871319d5882E696155d1253`](https://sepolia.etherscan.io/address/0xd2a855a8fC38d4E0a871319d5882E696155d1253). To deploy your own:
+> ⚠️ **The Sepolia contract at `0xd2a855a8fC38d4E0a871319d5882E696155d1253` is the legacy v3 source.** The v4 audit-grade refactor in `contract.sol` has a different ABI (new functions, renamed accessors, custom errors, role-based access control) and must be redeployed before the frontend can use it.
 
 ```bash
-# In Remix IDE or your Hardhat project
-# 1. Compile contract.sol with solc 0.8.20+
-# 2. Deploy with constructor arg: _verificationBackend = <admin wallet address>
-# 3. Update CONTRACT_ADDRESS in src/utils/contract.ts
+# In Remix IDE or your Hardhat / Foundry project:
+# 1. Install OZ contracts:        npm i @openzeppelin/contracts@^5
+# 2. Compile contract.sol with    solc 0.8.24 (pinned)
+# 3. Deploy with constructor arg: backend = <wallet that will sign /api/* calls>
+#                                 (deployer becomes DEFAULT_ADMIN_ROLE + PAUSER_ROLE)
+# 4. Post-deploy admin tasks:
+#    - setGovtAuthority(<dev/inst wallet>, true)  for each institutional holder
+#    - (optional) grantRole(PAUSER_ROLE, <ops wallet>)
+# 5. Update CONTRACT_ADDRESS in src/utils/contract.ts
+# 6. Regenerate the ABI in src/utils/contract.ts from the new artifact
 ```
 
 ### Step 5 — Run the Dev Server
@@ -863,21 +956,28 @@ npm run lint      # Run ESLint
 
 ## 🔐 Security Considerations
 
-| Threat | Mitigation |
-|--------|-----------|
-| **Reentrancy** in `buyLand` | Listing deleted *before* `seller.call{value}`. Checks-Effects-Interactions strictly enforced. |
-| **Unauthorized Minting** | `onlyBackend` modifier — only the immutable `verificationBackend` can mint. |
+| Threat | Mitigation (v4) |
+|--------|----------------|
+| **Reentrancy** in `buyLand` | (1) Strict Checks-Effects-Interactions — listing `delete`d before ETH send. (2) `ReentrancyGuard.nonReentrant` modifier as a belt-and-suspenders second layer. |
+| **Unauthorized Minting** | `onlyRole(BACKEND_ROLE)` via OZ `AccessControl` — rotatable so a leaked key can be recovered from. |
+| **Compromised Backend Key** | `BACKEND_ROLE` is rotatable (`grantRole` / `revokeRole`). Compare to v3 where `verificationBackend` was `immutable` and a leak bricked the contract. |
+| **Active Exploit Discovered** | Any `PAUSER_ROLE` holder can `pause()` — halts every user-facing write while reads stay available. |
 | **Private Key Exposure** | `ADMIN_PRIVATE_KEY` lives only on the Next.js server (Node runtime); never prefixed with `NEXT_PUBLIC_`; never reaches the browser bundle. |
-| **CNIC Duplication** | `cnicToAddress` mapping enforces one-CNIC-one-wallet at registration time. |
-| **Land ID Collision** | `landExists[landId]` check at every mint; deterministic `tokenId = keccak256(landId)` makes collisions cryptographically infeasible. |
+| **CNIC Duplication** | `_cnicToAddress` mapping enforces one-CNIC-one-wallet at registration time. |
+| **Land ID Collision** | `_landExists[landId]` check at every mint; deterministic `tokenId = keccak256(landId)` makes collisions cryptographically infeasible. |
+| **Stuck Overpayment** | `buyLand` refunds `msg.value - price` to the buyer; `emergencyWithdraw` exists as a final safety net for any stray ETH. |
+| **Stale-Listing Exploit** | `_update` override auto-clears any active listing on every NFT move (transfer or burn) — prevents the "Alice listed → transferred to Bob → Eve buys from Alice's stale listing" foot-gun. |
 | **Front-Running on Marketplace** | Sale price is fixed in the listing — buyer cannot be sniped at a different price. |
-| **Locked Funds (failed ETH transfer)** | `(bool success, ) = .call{value}("")` + `require(success)` — reverts the entire purchase if seller is a malicious contract. |
-| **Inheritance Forgery** | Only backend can `initiateInheritance`; only listed `heirs[]` can vote; 100% approval required. |
-| **Dispute Deadlock** | Backend `resolveDispute(force)` provides a legal-fallback escape hatch (verifiable on-chain). |
-| **Self-Transfer Abuse** | `require(newOwner != msg.sender)` and `require(msg.sender != listing.seller)`. |
+| **Locked Funds (failed ETH transfer)** | `(bool ok, ) = .call{value}("")` + custom error `EthTransferFailed` — reverts the entire purchase if seller is a malicious contract. |
+| **Inheritance Forgery** | Only `BACKEND_ROLE` can `initiateInheritance`; only addresses registered in `_isHeirFor[landId][nonce]` can vote; 100% approval required. |
+| **Inheritance DoS** | All inputs pre-validated at `initiate` time (no duplicate heirs, no duplicate new-landIds, no collisions, no zero-addresses, no unauthorized heirs) — the final vote can never revert on data the backend supplied. |
+| **Stale Vote Re-use** | Every `initiateInheritance` bumps `proposalNonce`; all vote/membership state is scoped to that nonce, so reissued plans get fresh state. |
+| **Dispute Deadlock** | Backend `resolveDispute(force)` provides a legal-fallback escape hatch (verifiable on-chain via `DisputeResolved` event). |
+| **Self-Transfer Abuse** | `newOwner != msg.sender` + `msg.sender != listing.seller` enforced via custom errors. |
 | **Hydration Mismatch** | Every wallet-aware page defers render until after `mount` — prevents SSR-leaked state. |
 | **Pinata Key Exposure** ⚠️ | Currently `NEXT_PUBLIC_*` (known limitation — see *Future Work*). |
 | **No Re-org Protection** | Standard 12-block confirmation wait via `useWaitForTransactionReceipt`. |
+| **CNIC Plaintext on Public Chain** ⚠️ | Stored as plaintext strings (a public-chain limitation, not fixable at this layer). Production deployment should use a hash commitment or zero-knowledge CNIC proof — listed in *Future Work*. |
 
 ### Threat Model Diagram
 
@@ -982,6 +1082,7 @@ flowchart LR
 | 12 | **Cross-DB consistency** (on-chain success but DB sync failed) | Tied the DB write to `useWaitForTransactionReceipt({ hash }).isSuccess`; added retry button on failure. |
 | 13 | **Half-decentralized marketplace** — v1/v2 stored listings in a Supabase DB, undermining the trust story (admin could silently delete listings) | **v3:** removed the marketplace DB entirely. Added `metadataHash` field to the on-chain `Listing` struct; photos + JSON metadata are pinned to IPFS in `CreateListingModal`; the chain stores the CID. Now nothing in the marketplace path requires trusting a centralised database. |
 | 14 | **ERC-721 metadata standard compliance** — earlier prototypes stored just the deed CID on-chain, breaking marketplace integrations (OpenSea etc.) | `DigitizationModal` now builds a proper ERC-721 metadata JSON `{name, image, attributes[], documents[]}`, pins that to IPFS, and stores its CID on-chain. The deed file is referenced via the JSON's `image` and `documents[]` fields. |
+| 15 | **v3 contract had 11 audit-class issues** — stuck overpayments in `buyLand`, stale listings after direct transfer, stale `hasApproved` after dispute reset, duplicate-heir deadlock, last-vote DoS on landId collision, immutable backend (no rotation), no pause mechanism, no reentrancy guard, no event on govt-authority changes, govt authority couldn't buy on marketplace, deceased's owner-index not cleaned on burn | **v4 refactor:** swapped `Ownable` for `AccessControl` (3 rotatable roles), added `Pausable` + `ReentrancyGuard`, introduced `proposalNonce` for inheritance vote scoping, pre-validated all inheritance inputs, overrode `_update` to auto-clear stale listings, refunded buyer overpays, replaced every `require` string with custom errors, added `LandStatus.INHERITED` terminal state, added `updateListingPrice`. See *Bugs Fixed in v4* table above. |
 
 ---
 
