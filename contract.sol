@@ -535,7 +535,8 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     struct SubdivisionPlan {
         string[] newLandIds;
         string[] newIpfsHashes;
-        string courtOrderCid; // REQUIRED — subdivisions need legal authority
+        string courtOrderCid; // REQUIRED — legal AUTHORITY for the split
+        string surveyMetadataCid; // REQUIRED — technical SPECIFICATION (boundaries, area, surveyor identity)
         uint256 approvalCount;
         bool isExecuted;
         uint256 proposalNonce;
@@ -671,12 +672,33 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     // can read the history via `getLegalOverrides`.
     mapping(string => LegalOverride[]) private _legalOverrides;
 
-    // --- Subdivision (v7) ---------------------------------------------------
+    // --- Subdivision (v7+) ---------------------------------------------------
     mapping(string => SubdivisionPlan) private _subdivisionPlans;
     // (parentLandId, proposalNonce, newLandIndex) → shareholders + shares
     mapping(string => mapping(uint256 => mapping(uint256 => address[]))) private _newLandShareholders;
     mapping(string => mapping(uint256 => mapping(uint256 => uint16[]))) private _newLandShares;
     mapping(string => mapping(uint256 => mapping(address => bool))) private _subdivisionApproved;
+
+    // --- Subdivision parent-child relationships (v8) ------------------------
+    //
+    // SECURITY / AUDITABILITY: every child land carries an on-chain pointer
+    // to its parent, and every parent carries the list of children produced
+    // by its subdivision. `_subdivisionGeneration` tracks how many splits
+    // upstream a land sits (0 for fresh imports). Walking these pointers
+    // reconstructs the full lineage of any parcel — essential for title-
+    // chain due diligence in the real world.
+    mapping(string => string) private _parentOfLand; // empty string for imports
+    mapping(string => string[]) private _childrenOfLand;
+    mapping(string => uint256) private _subdivisionGeneration;
+
+    // --- Subdivision tier-2 legal-override audit log (v8) --------------------
+    //
+    // Mirrors `_legalOverrides` for inheritance. Every arbiter action on a
+    // PENDING_SUBDIVISION or LOCKED_SUBDIVISION_DISPUTE proposal must commit
+    // the same four anchors (updated court CID, legal-resolution CID, reason,
+    // resolver/timestamp) — see `resolveSubdivisionDispute`. The log is
+    // queryable via `getSubdivisionLegalOverrides`.
+    mapping(string => LegalOverride[]) private _subdivisionLegalOverrides;
 
     // --- Occupancy (v7) -----------------------------------------------------
     mapping(string => OccupancyAgreement[]) private _occupancyAgreements;
@@ -790,17 +812,43 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         uint64 timestamp
     );
 
-    // Subdivision (v7) -------------------------------------------------------
+    // Subdivision (v7 — augmented in v8 with surveyMetadataCid, parent-child
+    //                  pointers, and the full tier-2 audit payload) ----------
     event SubdivisionProposed(
         string indexed parentLandId,
         uint256 newLandCount,
         string courtOrderCid,
+        string surveyMetadataCid,
         uint256 proposalNonce
     );
     event SubdivisionApproved(string indexed parentLandId, address indexed shareholder, uint256 proposalNonce);
     event SubdivisionDisputed(string indexed parentLandId, address indexed shareholder, uint256 proposalNonce);
     event SubdivisionFinalized(string indexed parentLandId, uint256 newLandCount, uint256 proposalNonce);
-    event SubdivisionDisputeResolved(string indexed parentLandId, bool forceExecuted, string courtOrderCid);
+    event SubdivisionFrozenForReview(
+        string indexed parentLandId,
+        address indexed resolver,
+        string reason,
+        uint64 timestamp
+    );
+    event SubdivisionLegalOverrideExecuted(
+        string indexed parentLandId,
+        address indexed resolver,
+        uint256 overrideIndex,
+        bool forceExecuted,
+        string updatedCourtOrderCid,
+        string legalResolutionCid,
+        string overrideReason,
+        uint64 timestamp
+    );
+    /// @notice Emitted when a child land is created by subdivision execution.
+    /// @dev    Lets indexers reconstruct the parent-child lineage without
+    ///         walking storage.
+    event ChildLandCreated(
+        string indexed parentLandId,
+        string indexed childLandId,
+        uint256 indexed generation,
+        uint256 tokenId
+    );
 
     // Occupancy (v7) ---------------------------------------------------------
     event OccupancyGranted(
@@ -1747,7 +1795,51 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     }
 
     // ------------------------------------------------------------------------
-    // 12.g Legal subdivision (v7 — court-anchored)
+    // 12.g Legal subdivision (v7 + v8 — court-anchored, parent-child tracked)
+    //
+    // ╔══════════════════════════════════════════════════════════════════╗
+    // ║ WHY CO-OWNERSHIP DIFFERS FROM PHYSICAL DIVISION                    ║
+    // ╚══════════════════════════════════════════════════════════════════╝
+    //
+    // CO-OWNERSHIP IS A LEDGER FACT (layer 2).
+    //   Multiple addresses can hold basis-point shares of ONE parcel.
+    //   The land remains physically intact. A buyer who acquires 30% of a
+    //   plot from a five-owner family is now a co-owner of the same plot,
+    //   not the owner of a different plot. Co-ownership disputes are
+    //   contractual / financial — settled via share trades or share-sale
+    //   marketplaces, not surveyors.
+    //
+    // PHYSICAL SUBDIVISION IS A WORLD FACT (layer 1).
+    //   The actual parcel becomes TWO OR MORE distinct parcels on the
+    //   ground. Boundaries are surveyed. Plot numbers change. New title
+    //   documents are issued. Subdivision is irreversible without re-
+    //   merger — itself a separate legal process.
+    //
+    // WHY INHERITANCE SHOULD NOT FRAGMENT LAND AUTOMATICALLY.
+    //   When a holder dies, leaving three children, the children typically
+    //   become CO-OWNERS of one parcel (layer-2 redistribution). Forcing
+    //   the parcel to physically split into three would:
+    //     • require a survey + planning approval the contract cannot
+    //       authorise,
+    //     • produce three plots that may be too small to be legally
+    //       useful or marketable,
+    //     • break NFT identity continuity (provenance trackers, liens,
+    //       and indexers all lose their anchor),
+    //     • impose physical division on heirs who might prefer to sell
+    //       the whole parcel jointly or continue using it together.
+    //   Inheritance therefore lives in layer 2; physical subdivision is
+    //   a separate, deliberate, court-anchored layer-1 act.
+    //
+    // WHY SUBDIVISION REQUIRES LEGAL VERIFICATION CHANGES.
+    //   A real-world subdivision needs TWO off-chain artefacts:
+    //     1. A COURT ORDER authorising the legal split (the "may we do
+    //        this?" answer).
+    //     2. A SURVEY / planning document specifying boundaries, area,
+    //        new plot numbers (the "what exactly are the new parcels?"
+    //        answer).
+    //   v8 carries both CIDs in the SubdivisionPlan so the on-chain
+    //   record commits to BOTH the legal authority and the technical
+    //   specification.
     // ------------------------------------------------------------------------
 
     /**
@@ -1756,20 +1848,25 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
      *         own fresh share ledger. The ONLY operation in the contract
      *         that creates new land NFTs after initial import.
      *
-     * @dev    SECURITY / GOVERNANCE
-     *         --------------------------------------------------------
-     *         Subdivision physically alters the land identity, so it
-     *         requires:
-     *           1. SUBDIVISION_ORACLE_ROLE to propose (the legal /
-     *              survey operator).
-     *           2. A non-empty `courtOrderCid` — the legal authority
-     *              for the split.
-     *           3. UNANIMOUS approval from all current shareholders of
-     *              the parent (or arbiter override).
+     * @param  courtOrderCid     IPFS CID of the signed court order
+     *                           authorising the subdivision (the LEGAL
+     *                           AUTHORITY for the split).
+     * @param  surveyMetadataCid IPFS CID of the survey / planning document
+     *                           specifying boundaries, area, new plot IDs
+     *                           (the TECHNICAL SPECIFICATION). Both CIDs
+     *                           are pinned on-chain so the resulting child
+     *                           NFTs are tied to a verifiable physical
+     *                           description.
      *
-     *         Nested calldata arrays carry per-new-land shareholder /
-     *         share allocations. Each new land's allocations must sum
-     *         to TOTAL_SHARES (validated by `_validateOwnerShares`).
+     * @dev    Requires:
+     *           1. `SUBDIVISION_ORACLE_ROLE` (the legal / survey operator)
+     *           2. Non-empty `courtOrderCid` AND `surveyMetadataCid`
+     *           3. UNANIMOUS approval from current shareholders of the
+     *              parent (tier 1), OR an arbiter override (tier 2) with
+     *              the full v8 audit payload.
+     *
+     *         Per-new-land shareholder/share allocations live in nested
+     *         calldata arrays; each must sum to TOTAL_SHARES.
      */
     function proposeSubdivision(
         string calldata parentLandId,
@@ -1777,7 +1874,8 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         string[] calldata newIpfsHashes,
         address[][] calldata newLandShareholders,
         uint16[][] calldata newLandShares,
-        string calldata courtOrderCid
+        string calldata courtOrderCid,
+        string calldata surveyMetadataCid
     )
         external
         onlyRole(SUBDIVISION_ORACLE_ROLE)
@@ -1785,6 +1883,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         landMustExist(parentLandId)
         onlyActive(parentLandId)
         boundedString(courtOrderCid)
+        boundedString(surveyMetadataCid)
     {
         _validateSubdivisionInputs(newLandIds, newIpfsHashes, newLandShareholders, newLandShares);
 
@@ -1794,6 +1893,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         plan.newLandIds = newLandIds;
         plan.newIpfsHashes = newIpfsHashes;
         plan.courtOrderCid = courtOrderCid;
+        plan.surveyMetadataCid = surveyMetadataCid;
         plan.approvalCount = 0;
         plan.isExecuted = false;
         plan.proposalNonce = nonce;
@@ -1808,7 +1908,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         }
 
         _landRecords[parentLandId].status = LandStatus.PENDING_SUBDIVISION;
-        emit SubdivisionProposed(parentLandId, m, courtOrderCid, nonce);
+        emit SubdivisionProposed(parentLandId, m, courtOrderCid, surveyMetadataCid, nonce);
         emit LandStatusChanged(parentLandId, LandStatus.PENDING_SUBDIVISION);
     }
 
@@ -1846,23 +1946,82 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         emit LandStatusChanged(parentLandId, LandStatus.LOCKED_SUBDIVISION_DISPUTE);
     }
 
+    /**
+     * @notice **TIER-2 ESCALATION — court-anchored freeze.** Arbiter
+     *         transitions a `PENDING_SUBDIVISION` proposal directly to
+     *         `LOCKED_SUBDIVISION_DISPUTE` for formal legal review even
+     *         without a shareholder dispute.
+     */
+    function freezeSubdivisionForReview(
+        string calldata parentLandId,
+        string calldata reason
+    ) external onlyRole(DISPUTE_ARBITER_ROLE) whenNotPaused boundedString(reason) {
+        if (_landRecords[parentLandId].status != LandStatus.PENDING_SUBDIVISION) {
+            revert LandRegistry__NoPendingSubdivision(parentLandId);
+        }
+        _landRecords[parentLandId].status = LandStatus.LOCKED_SUBDIVISION_DISPUTE;
+        emit SubdivisionFrozenForReview(parentLandId, msg.sender, reason, uint64(block.timestamp));
+        emit LandStatusChanged(parentLandId, LandStatus.LOCKED_SUBDIVISION_DISPUTE);
+    }
+
+    /**
+     * @notice **TIER-2 ESCALATION — legal-override resolution** for
+     *         subdivision. Mirrors the v8 inheritance dispute model: the
+     *         arbiter cannot act on role alone — every call must commit
+     *         (updatedCourtOrderCid, legalResolutionCid, overrideReason)
+     *         to the on-chain audit log, regardless of whether the call
+     *         force-executes the standing plan or cancels it.
+     */
     function resolveSubdivisionDispute(
         string calldata parentLandId,
         bool forceExecute,
-        string calldata courtOrderCid
-    ) external onlyRole(DISPUTE_ARBITER_ROLE) whenNotPaused nonReentrant boundedString(courtOrderCid) {
+        string calldata updatedCourtOrderCid,
+        string calldata legalResolutionCid,
+        string calldata overrideReason
+    )
+        external
+        onlyRole(DISPUTE_ARBITER_ROLE)
+        whenNotPaused
+        nonReentrant
+        boundedString(updatedCourtOrderCid)
+        boundedString(legalResolutionCid)
+        boundedString(overrideReason)
+    {
         if (_landRecords[parentLandId].status != LandStatus.LOCKED_SUBDIVISION_DISPUTE) {
             revert LandRegistry__SubdivisionNotDisputed(parentLandId);
         }
 
+        LegalOverride[] storage log = _subdivisionLegalOverrides[parentLandId];
+        uint256 overrideIndex = log.length;
+        log.push(
+            LegalOverride({
+                resolver: msg.sender,
+                timestamp: uint64(block.timestamp),
+                forceExecuted: forceExecute,
+                updatedCourtOrderCid: updatedCourtOrderCid,
+                legalResolutionCid: legalResolutionCid,
+                overrideReason: overrideReason
+            })
+        );
+
         if (forceExecute) {
-            _subdivisionPlans[parentLandId].courtOrderCid = courtOrderCid;
+            _subdivisionPlans[parentLandId].courtOrderCid = updatedCourtOrderCid;
             _executeSubdivision(parentLandId);
         } else {
             _landRecords[parentLandId].status = LandStatus.ACTIVE;
             emit LandStatusChanged(parentLandId, LandStatus.ACTIVE);
         }
-        emit SubdivisionDisputeResolved(parentLandId, forceExecute, courtOrderCid);
+
+        emit SubdivisionLegalOverrideExecuted(
+            parentLandId,
+            msg.sender,
+            overrideIndex,
+            forceExecute,
+            updatedCourtOrderCid,
+            legalResolutionCid,
+            overrideReason,
+            uint64(block.timestamp)
+        );
     }
 
     // ------------------------------------------------------------------------
@@ -2072,13 +2231,18 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         parentRecord.status = LandStatus.SUBDIVIDED;
         emit LandStatusChanged(parentLandId, LandStatus.SUBDIVIDED);
 
-        // 4. Mint each child NFT and seed its share ledger.
+        // 4. Mint each child NFT and seed its share ledger. Each child gets
+        //    a parent-pointer back to `parentLandId` and a subdivision
+        //    generation that's parent.generation + 1.
         uint256 m = plan.newLandIds.length;
+        uint256 childGeneration = _subdivisionGeneration[parentLandId] + 1;
         for (uint256 i = 0; i < m; ) {
             _createSubdividedChild(
+                parentLandId,
                 plan.newLandIds[i],
                 plan.newIpfsHashes[i],
                 parentType,
+                childGeneration,
                 _newLandShareholders[parentLandId][nonce][i],
                 _newLandShares[parentLandId][nonce][i]
             );
@@ -2091,9 +2255,11 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
     }
 
     function _createSubdividedChild(
+        string memory parentLandId,
         string memory childLandId,
         string memory ipfsHash,
         LandType lType,
+        uint256 generation,
         address[] storage holders,
         uint16[] storage shares
     ) private {
@@ -2107,6 +2273,11 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         });
         _landExists[childLandId] = true;
         _allLandIds.push(childLandId);
+
+        // Parent-child lineage pointers.
+        _parentOfLand[childLandId] = parentLandId;
+        _childrenOfLand[parentLandId].push(childLandId);
+        _subdivisionGeneration[childLandId] = generation;
 
         uint256 tokenId = getTokenIdFromLandId(childLandId);
         _tokenIdToLandId[tokenId] = childLandId;
@@ -2132,6 +2303,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         }
 
         emit LandMinted(childLandId, lType, tokenId);
+        emit ChildLandCreated(parentLandId, childLandId, generation, tokenId);
         emit LandStatusChanged(childLandId, LandStatus.ACTIVE);
     }
 
@@ -2607,6 +2779,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
             string[] memory newLandIds,
             string[] memory newIpfsHashes,
             string memory courtOrderCid,
+            string memory surveyMetadataCid,
             uint256 approvalCount,
             bool isExecuted,
             uint256 proposalNonce
@@ -2617,6 +2790,7 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
             p.newLandIds,
             p.newIpfsHashes,
             p.courtOrderCid,
+            p.surveyMetadataCid,
             p.approvalCount,
             p.isExecuted,
             p.proposalNonce
@@ -2637,6 +2811,62 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         address shareholder
     ) external view returns (bool) {
         return _subdivisionApproved[parentLandId][_subdivisionPlans[parentLandId].proposalNonce][shareholder];
+    }
+
+    // ---- Parent / child / lineage views (v8) -------------------------------
+
+    /// @notice Direct parent of `landId`, or empty string for top-level imports.
+    function getParentLand(string calldata landId) external view returns (string memory) {
+        return _parentOfLand[landId];
+    }
+
+    /// @notice Direct children of `landId` (lands minted from its subdivision).
+    function getChildLands(string calldata landId) external view returns (string[] memory) {
+        return _childrenOfLand[landId];
+    }
+
+    /// @notice How many subdivision generations upstream this land sits.
+    ///         0 for fresh imports; n+1 for the children of an n-generation
+    ///         parent.
+    function getSubdivisionGeneration(string calldata landId) external view returns (uint256) {
+        return _subdivisionGeneration[landId];
+    }
+
+    /// @notice Full ancestry of `landId` from the oldest ancestor down to
+    ///         `landId` itself (inclusive). For a top-level import this is
+    ///         a one-element array containing just `landId`. Title-chain
+    ///         due-diligence reads this to verify provenance.
+    function getSubdivisionLineage(string calldata landId) external view returns (string[] memory) {
+        uint256 depth = _subdivisionGeneration[landId];
+        string[] memory lineage = new string[](depth + 1);
+        string memory cursor = landId;
+        // Fill from the back so we end with [oldest...landId].
+        for (uint256 i = depth + 1; i > 0; ) {
+            unchecked {
+                --i;
+            }
+            lineage[i] = cursor;
+            if (i > 0) cursor = _parentOfLand[cursor];
+        }
+        return lineage;
+    }
+
+    /// @notice Tier-2 audit log for subdivision overrides on this parent land.
+    function getSubdivisionLegalOverrides(
+        string calldata parentLandId
+    ) external view returns (LegalOverride[] memory) {
+        return _subdivisionLegalOverrides[parentLandId];
+    }
+
+    function getSubdivisionLegalOverride(
+        string calldata parentLandId,
+        uint256 index
+    ) external view returns (LegalOverride memory) {
+        return _subdivisionLegalOverrides[parentLandId][index];
+    }
+
+    function totalSubdivisionLegalOverrides(string calldata parentLandId) external view returns (uint256) {
+        return _subdivisionLegalOverrides[parentLandId].length;
     }
 
     // === SEPARATE LEDGER — occupancy / use-right (NOT layer-2 ownership) ====
