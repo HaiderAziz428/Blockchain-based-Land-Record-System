@@ -67,7 +67,7 @@
 | **Submission Year** | 2026 |
 | **Project Duration** | 8 months (Sept 2025 — May 2026) |
 | **Deployed Network** | Ethereum Sepolia Testnet |
-| **Deployed Contract** | [`0xd2a855a8fC38d4E0a871319d5882E696155d1253`](https://sepolia.etherscan.io/address/0xd2a855a8fC38d4E0a871319d5882E696155d1253) — _legacy v3; the **v6 fractional-ownership source** in `contract.sol` requires redeployment before the frontend can use it (see §Smart Contract Design)_ |
+| **Deployed Contract** | [`0xd2a855a8fC38d4E0a871319d5882E696155d1253`](https://sepolia.etherscan.io/address/0xd2a855a8fC38d4E0a871319d5882E696155d1253) — _legacy v3; the **v7 hybrid-governance source** in `contract.sol` requires redeployment before the frontend can use it (see §Smart Contract Design)_ |
 
 ---
 
@@ -495,9 +495,50 @@ flowchart TD
 
 ## 📜 Smart Contract Design
 
-### Single Contract: `LandRegistry.sol` — _v6 Fractional-Ownership Architecture_
+### Single Contract: `LandRegistry.sol` — _v7 Hybrid-Governance Architecture_
 
-> **Headline change in v6:** ownership is no longer one-address-per-NFT. Each land has 10,000 basis points (= 100%) of shares distributed across one or more co-owners. Transfers, marketplace sales, and inheritance operate on basis-point portions of a single existing NFT — never on duplicate NFTs.
+> **Headline change in v7:** the system is now **explicitly hybrid** — the chain holds land identity and a consensus ledger, while courts, the developer's allotment registry, and the proposed co-owners themselves hold the legal authority. Backend ROLES can only propose; they cannot finalise alone. ALL proposed owners must verify a new import before the NFT mints. Inheritance, subdivision, and import disputes are all resolved by a court-anchored arbiter whose every override is recorded on-chain with a court-order CID.
+
+### 🏛️ Why Hybrid (Not Fully Decentralised)
+
+Pakistani land governance cannot be fully automated on-chain:
+
+| Off-chain dependency | Why on-chain logic alone is insufficient |
+|---------------------|------------------------------------------|
+| Government / developer registries (NADRA, DHA / Bahria allotment lists) | Ground truth about who exists and who was allotted lives off-chain |
+| Inheritance | Islamic / civil family law + probate courts determine who an heir is — a contract cannot |
+| Disputes | Title, succession, fraud, and boundary cases require judicial intervention |
+| Physical subdivision | Needs surveys, planning approval, and a court order — a contract can record but not authorise the split |
+
+v7 therefore implements **three explicit governance layers**:
+
+1. **Backend ROLES PROPOSE** — `MINTER_ROLE` proposes land imports, `INHERITANCE_ORACLE_ROLE` proposes successions, `SUBDIVISION_ORACLE_ROLE` proposes legal splits. **None of these can finalise unilaterally.**
+2. **On-chain stakeholders CONSENT** — proposed owners verify imports, heirs vote on inheritance, current shareholders approve subdivisions. Unanimous consent auto-executes.
+3. **Arbiter resolves with court CID** — `DISPUTE_ARBITER_ROLE` can force-execute or cancel a deadlocked proposal, but **only with a court-order CID pinned on IPFS** — every override is publicly auditable.
+
+### 🧭 Eight-State Lifecycle
+
+```
+PROPOSED ──┬── all verify ──────────────────────────────────────→ ACTIVE
+           ├── any dispute ────────────────────→ LOCKED_IMPORT_DISPUTE
+           │                ├── arbiter force-approve (+ court CID) → ACTIVE
+           │                └── arbiter cancel ───────────────→ (record deleted)
+           └── minter cancel ─────────────────────────────────→ (record deleted)
+
+ACTIVE ────┬── initiateInheritance ─────────────→ PENDING_INHERITANCE
+           │                                   ├── all heirs approve → ACTIVE (redistributed)
+           │                                   └── any dispute → LOCKED_INHERITANCE_DISPUTE
+           │                                             ├── arbiter force (+ court) → ACTIVE
+           │                                             └── arbiter cancel ───────→ ACTIVE
+           │
+           └── proposeSubdivision (+ court CID) → PENDING_SUBDIVISION
+                                               ├── all shareholders approve → SUBDIVIDED (terminal) + children ACTIVE
+                                               └── any dispute → LOCKED_SUBDIVISION_DISPUTE
+                                                         ├── arbiter force (+ court) → SUBDIVIDED
+                                                         └── arbiter cancel ─────────→ ACTIVE
+```
+
+### 🧮 The Fractional Ownership Model (carried from v6)
 
 ### 🧮 The Fractional Ownership Model
 
@@ -569,60 +610,83 @@ The system intentionally consolidates all logic into a single contract to minimi
 | Module | Purpose |
 |--------|---------|
 | **Identity** | `registerUser`, `getUser`, `cnicToAddress` |
-| **Land Data** | `storeVerifiedLandRecord`, `getLandRecord`, `_landExists`, `tokenURI` |
-| **NFT (ERC-721)** | OpenZeppelin `ERC721`; deterministic `tokenId = keccak256(landId)`; **self-custodial** — `_update` override rejects all post-mint transitions |
-| **Share Ledger** _(v6 core)_ | `transferShare`, `getShareholders`, `getShareholdersWithBps`, `getShareBps`, `getTotalShares` |
-| **Marketplace** _(per-share)_ | `listShareForSale`, `updateListingPrice` _(decrease-only)_, `buyShare(landId, seller, maxPrice)`, `cancelListing`, `getListing(landId, seller)` |
+| **Land Import** _(v7 — multi-party verification)_ | `proposeLandImport`, `verifyLandImport`, `disputeLandImport`, `cancelLandImport`, `resolveLandImportDispute`, `getImportProposal`, `isImportVerified` |
+| **Land Data** | `getLandRecord`, `_landExists`, `tokenURI` (NFT minted only at import finalisation) |
+| **NFT (ERC-721)** | OpenZeppelin `ERC721`; deterministic `tokenId = keccak256(landId)`; **self-custodial** — `_update` override allows only mint + burn (subdivision) |
+| **Share Ledger** | `transferShare`, `getShareholders`, `getShareholdersWithBps`, `getShareBps`, `getTotalShares` |
+| **Marketplace** _(per-share, per-seller)_ | `listShareForSale`, `updateListingPrice` _(decrease-only)_, `buyShare(landId, seller, maxPrice)`, `cancelListing`, `getListing(landId, seller)` |
 | **Escrow** | `withdrawProceeds`, `pendingProceeds`, `totalPendingWithdrawals` — pull-payment ledger |
-| **Inheritance** _(redistributes shares, never mints)_ | `initiateInheritance`, `approveSuccessionPlan`, `disputeSuccessionPlan`, `resolveDispute`, `getInheritanceRequest`, `hasHeirApproved` |
+| **Inheritance** _(redistributes shares, never mints)_ | `initiateInheritance`, `approveSuccessionPlan`, `disputeSuccessionPlan`, `resolveInheritanceDispute`, `getInheritanceRequest`, `hasHeirApproved` |
+| **Legal Subdivision** _(v7)_ | `proposeSubdivision`, `approveSubdivision`, `disputeSubdivision`, `resolveSubdivisionDispute`, `getSubdivisionPlan`, `getSubdivisionPart`, `hasShareholderApprovedSubdivision` |
+| **Occupancy / Use-right** _(v7)_ | `grantOccupancy`, `revokeOccupancy`, `getOccupancyAgreements`, `getOccupancyAgreement` |
 | **Indexing** | `_allLandIds`, `_ownerToLands`, `getAllLandRecordsPaginated`, `getLandsByOwner`, `getLandsByCnic`, `totalLandRecords` |
-| **Access Control** | `DEFAULT_ADMIN_ROLE`, `MINTER_ROLE`, `INHERITANCE_ORACLE_ROLE`, `DISPUTE_ARBITER_ROLE`, `GOVT_AUTHORITY_ROLE`, `PAUSER_ROLE` |
+| **Access Control** | `DEFAULT_ADMIN_ROLE`, `MINTER_ROLE`, `INHERITANCE_ORACLE_ROLE`, `SUBDIVISION_ORACLE_ROLE` _(v7)_, `DISPUTE_ARBITER_ROLE`, `GOVT_AUTHORITY_ROLE`, `PAUSER_ROLE` |
 | **Lifecycle** | `pause`, `unpause`, `emergencyWithdraw` _(stray-ETH only)_, `setGovtAuthority` |
-| **History** | `OwnershipChange[]` log per land — one entry per shareholder change (mint, transfer, sale, inheritance) |
+| **History** | `OwnershipChange[]` log per land — one entry per shareholder change (mint, transfer, sale, inheritance leg, subdivision seed) |
 
 ### Key Functions
 
 | Function | Caller | Modifier(s) | Description |
 |----------|--------|-------------|-------------|
 | `registerUser(name, cnic)` | Citizen | `whenNotPaused`, `boundedString` | One-time wallet ↔ CNIC binding |
-| `storeVerifiedLandRecord(owner, landId, ipfsHash, type)` | Minter | `onlyRole(MINTER_ROLE)`, `whenNotPaused`, `nonReentrant`, `boundedString` | Mints land NFT; initial `owner` receives 100% (10,000 bps) of shares |
-| **`transferShare(landId, recipient, shareBps, price)`** _(v6)_ | Shareholder | `whenNotPaused`, `nonReentrant`, `landMustExist`, `onlyActive` | Transfer a basis-point portion (or all) of caller's share. To transfer 100% pass `shareBps = 10000` |
-| **`listShareForSale(landId, shareBpsForSale, price, metaHash)`** _(v6)_ | Shareholder | `whenNotPaused`, `landMustExist`, `onlyActive`, `boundedString` | List a basis-point portion of caller's share for sale; 7-day deadline |
-| `updateListingPrice(landId, newPrice)` | Seller | `whenNotPaused` | **Decrease only** on caller's own listing; keeps deadline |
-| **`buyShare(landId, seller, maxPrice)`** _(v6)_ | Registered or Govt-Authority Buyer | `whenNotPaused`, `nonReentrant`, `landMustExist`, `onlyActive`, `payable` | Atomic purchase of `seller`'s listed share; reverts if `price > maxPrice`; refunds excess; credits seller via escrow |
+| **`proposeLandImport(landId, ipfsHash, lType, proposedOwners[], proposedShares[], courtOrderCid)`** _(v7)_ | Minter | `onlyRole(MINTER_ROLE)`, `whenNotPaused`, `boundedString` | Files an import for all-owner verification; NFT NOT minted yet; shares must sum to 10,000 |
+| **`verifyLandImport(landId)`** _(v7)_ | Proposed owner | `whenNotPaused`, `nonReentrant` | Confirms the import; when ALL proposed owners verify, NFT mints + ledger populates atomically |
+| **`disputeLandImport(landId)`** _(v7)_ | Proposed owner | `whenNotPaused` | Locks the import (→ `LOCKED_IMPORT_DISPUTE`) |
+| **`cancelLandImport(landId)`** _(v7)_ | Minter | `onlyRole(MINTER_ROLE)`, `whenNotPaused` | Cancels caller's own pending proposal |
+| **`resolveLandImportDispute(landId, forceApprove, courtOrderCid)`** _(v7)_ | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `nonReentrant`, `boundedString` | Force-approve (with court CID) or cancel |
+| `transferShare(landId, recipient, shareBps, price)` | Shareholder | `whenNotPaused`, `nonReentrant`, `landMustExist`, `onlyActive` | Transfer a bps portion of caller's share |
+| `listShareForSale(landId, shareBpsForSale, price, metaHash)` | Shareholder | `whenNotPaused`, `landMustExist`, `onlyActive`, `boundedString` | List a bps portion for sale (7-day deadline) |
+| `updateListingPrice(landId, newPrice)` | Seller | `whenNotPaused` | **Decrease only** on caller's own listing |
+| `buyShare(landId, seller, maxPrice)` | Registered or Govt-Authority Buyer | `whenNotPaused`, `nonReentrant`, `landMustExist`, `onlyActive`, `payable` | Atomic purchase of `seller`'s listed share; refunds excess; credits seller via escrow |
 | `withdrawProceeds()` | Any seller with balance | `nonReentrant` _(NOT whenNotPaused)_ | Pull-payment claim of accumulated sale proceeds |
-| `cancelListing(landId)` | Seller | `whenNotPaused` | Removes caller's listing for `landId` |
-| **`initiateInheritance(landId, deceasedHolder, heirs[], heirShares[])`** _(v6 redesigned)_ | Oracle | `onlyRole(INHERITANCE_ORACLE_ROLE)`, `whenNotPaused`, `landMustExist`, `onlyActive` | Opens proposal that redistributes `deceasedHolder`'s shares across heirs; `heirShares[]` must sum to `_shareBps[landId][deceased]` |
-| `approveSuccessionPlan(landId)` | Heir | `whenNotPaused`, `nonReentrant` | Vote yes; auto-executes at 100% — heirs become co-shareholders of the same NFT |
-| `disputeSuccessionPlan(landId)` | Heir | `whenNotPaused` | Single dispute → permanent lock |
-| `resolveDispute(landId, force)` | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `nonReentrant` | Force-execute or revert to `ACTIVE` |
+| `cancelListing(landId)` | Seller | `whenNotPaused` | Removes caller's listing |
+| `initiateInheritance(landId, deceasedHolder, heirs[], heirShares[])` | Oracle | `onlyRole(INHERITANCE_ORACLE_ROLE)`, `whenNotPaused`, `landMustExist`, `onlyActive` | Redistributes `deceasedHolder`'s bps across heirs (sum check enforced) |
+| `approveSuccessionPlan(landId)` | Heir | `whenNotPaused`, `nonReentrant` | Vote yes; auto-executes at 100% |
+| `disputeSuccessionPlan(landId)` | Heir | `whenNotPaused` | Locks → `LOCKED_INHERITANCE_DISPUTE` |
+| **`resolveInheritanceDispute(landId, force, courtOrderCid)`** _(v7 — renamed + court CID)_ | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `nonReentrant`, `boundedString` | Force-execute (with court CID) or cancel |
+| **`proposeSubdivision(parentLandId, newLandIds[], newIpfsHashes[], newLandShareholders[][], newLandShares[][], courtOrderCid)`** _(v7)_ | Subdivision Oracle | `onlyRole(SUBDIVISION_ORACLE_ROLE)`, `whenNotPaused`, `landMustExist`, `onlyActive`, `boundedString` | Files a legal-subdivision plan (each child land's shares must sum to 10,000) |
+| **`approveSubdivision(parentLandId)`** _(v7)_ | Parent shareholder | `whenNotPaused`, `nonReentrant` | Vote yes; auto-executes when ALL current shareholders approve |
+| **`disputeSubdivision(parentLandId)`** _(v7)_ | Parent shareholder | `whenNotPaused` | Locks → `LOCKED_SUBDIVISION_DISPUTE` |
+| **`resolveSubdivisionDispute(parentLandId, force, courtOrderCid)`** _(v7)_ | Arbiter | `onlyRole(DISPUTE_ARBITER_ROLE)`, `whenNotPaused`, `nonReentrant`, `boundedString` | Force-execute (with court CID) or cancel |
+| **`grantOccupancy(landId, occupant, startTime, endTime, termsCid)`** _(v7)_ | Shareholder | `whenNotPaused`, `landMustExist`, `onlyActive`, `boundedString` | Record a time-bound right of use; does NOT affect the share ledger |
+| **`revokeOccupancy(landId, agreementId)`** _(v7)_ | Original grantor | `whenNotPaused` | Marks the agreement revoked |
 | `setGovtAuthority(wallet, status)` | Admin | `onlyRole(DEFAULT_ADMIN_ROLE)` | Grant/revoke `GOVT_AUTHORITY_ROLE` |
 | `pause()` / `unpause()` | Pauser | `onlyRole(PAUSER_ROLE)` | Halts/resumes user-facing writes |
 | `emergencyWithdraw(to)` | Admin | `onlyRole(DEFAULT_ADMIN_ROLE)`, `nonReentrant` | Sweeps **stray ETH only** (never seller escrow) |
-| `getLandRecord(landId)` | Anyone | view | Public verification (no longer carries `currentOwner` — use share views) |
-| **`getShareholders(landId)`** _(v6)_ | Anyone | view | Ordered shareholder list |
-| **`getShareholdersWithBps(landId)`** _(v6)_ | Anyone | view | Parallel arrays of holders + their bps |
-| **`getShareBps(landId, holder)`** _(v6)_ | Anyone | view | O(1) share lookup for a single holder |
-| **`getTotalShares(landId)`** _(v6)_ | Anyone | view | Runtime Σ of all shareholder bps — should always be 10,000 for active land |
-| `getListing(landId, seller)` | Anyone | view | Listing details for a (land, seller) pair |
+| `getLandRecord(landId)` | Anyone | view | Public verification (no `currentOwner`/`cnic` field — use share views) |
+| `getShareholders(landId)` / `getShareholdersWithBps(landId)` | Anyone | view | Shareholder enumeration |
+| `getShareBps(landId, holder)` / `getTotalShares(landId)` | Anyone | view | Per-holder + runtime-sum bps views |
+| `getListing(landId, seller)` | Anyone | view | Listing for a (land, seller) pair |
+| `getOwnershipHistory(landId)` | Anyone | view | Full append-only audit log |
+| `getInheritanceRequest(landId)` | Anyone | view | Full proposal (deceased, heirs, shares, courtOrderCid) |
+| `getImportProposal(landId)` _(v7)_ | Anyone | view | Pending import details |
+| `getSubdivisionPlan(landId)` / `getSubdivisionPart(landId, i)` _(v7)_ | Anyone | view | Subdivision plan + per-child allocations |
+| `getOccupancyAgreements(landId)` _(v7)_ | Anyone | view | All occupancy agreements (incl. revoked) |
 | `getAllLandRecordsPaginated(cursor, size)` | Anyone | view | Cursor-based admin pagination |
-| `getInheritanceRequest(landId)` | Anyone | view | Full proposal incl. deceased + heir-shares arrays |
-| `hasHeirApproved(landId, heir)` | Anyone | view | Per-nonce vote check |
-| `pendingProceeds(account)` | Anyone | view | Pull-payment balance for a seller |
-| `totalPendingWithdrawals()` | Anyone | view | Total ETH credited but unwithdrawn |
+| `pendingProceeds(account)` / `totalPendingWithdrawals()` | Anyone | view | Pull-payment balances |
 
 ### Events Emitted
 
 ```solidity
 event UserRegistered(address indexed user, string name, string cnic);
-event LandMinted(address indexed initialOwner, string indexed landId, LandType lType, uint256 tokenId);
 
-// Share-ledger (v6) ------------------------------------------------------------
+// Land import (v7) -------------------------------------------------------------
+event LandImportProposed(string indexed landId, address indexed proposer, uint256 ownerCount, string courtOrderCid, uint256 proposalNonce);
+event LandImportVerified(string indexed landId, address indexed owner, uint256 proposalNonce);
+event LandImportDisputed(string indexed landId, address indexed disputer, uint256 proposalNonce);
+event LandImportCancelled(string indexed landId);
+event LandImportResolved(string indexed landId, bool forceApproved, string courtOrderCid);
+event LandImportFinalized(string indexed landId, uint256 proposalNonce);
+
+// NFT mint — emitted at IMPORT FINALISATION, not at proposal -------------------
+event LandMinted(string indexed landId, LandType lType, uint256 tokenId);
+
+// Share-ledger -----------------------------------------------------------------
 event ShareholderAdded(string indexed landId, address indexed holder, uint16 shareBps);
 event ShareholderRemoved(string indexed landId, address indexed holder);
 event ShareTransferred(string indexed landId, address indexed from, address indexed to, uint16 shareBps, uint256 price);
 
-// Marketplace (v6 — per share) -------------------------------------------------
+// Marketplace (per-share, per-seller) ------------------------------------------
 event ShareListed(string indexed landId, address indexed seller, uint16 shareBpsForSale, uint256 price, string metadataHash);
 event ListingPriceUpdated(string indexed landId, address indexed seller, uint256 oldPrice, uint256 newPrice);
 event ListingCancelled(string indexed landId, address indexed seller);
@@ -632,12 +696,23 @@ event ShareSold(string indexed landId, address indexed buyer, address indexed se
 event ProceedsCredited(address indexed seller, uint256 amount);
 event ProceedsWithdrawn(address indexed seller, uint256 amount);
 
-// Inheritance (v6 carries deceased + heir count) -------------------------------
+// Inheritance ------------------------------------------------------------------
 event InheritanceInitiated(string indexed landId, address indexed deceasedHolder, uint256 totalHeirs, uint16 deceasedShareBps, uint256 proposalNonce);
 event HeirApproved(string indexed landId, address indexed heir, uint256 proposalNonce);
 event InheritanceDisputed(string indexed landId, address indexed heir, uint256 proposalNonce);
 event InheritanceFinalized(string indexed landId, uint256 proposalNonce);
-event DisputeResolved(string indexed landId, bool forceExecuted);
+event InheritanceDisputeResolved(string indexed landId, bool forceExecuted, string courtOrderCid);
+
+// Legal subdivision (v7) -------------------------------------------------------
+event SubdivisionProposed(string indexed parentLandId, uint256 newLandCount, string courtOrderCid, uint256 proposalNonce);
+event SubdivisionApproved(string indexed parentLandId, address indexed shareholder, uint256 proposalNonce);
+event SubdivisionDisputed(string indexed parentLandId, address indexed shareholder, uint256 proposalNonce);
+event SubdivisionFinalized(string indexed parentLandId, uint256 newLandCount, uint256 proposalNonce);
+event SubdivisionDisputeResolved(string indexed parentLandId, bool forceExecuted, string courtOrderCid);
+
+// Occupancy / use-right (v7) ---------------------------------------------------
+event OccupancyGranted(string indexed landId, uint64 indexed agreementId, address indexed grantor, address occupant, uint64 startTime, uint64 endTime, string termsCid);
+event OccupancyRevoked(string indexed landId, uint64 indexed agreementId, address indexed grantor);
 
 // Other ------------------------------------------------------------------------
 event LandStatusChanged(string indexed landId, LandStatus status);
@@ -646,7 +721,7 @@ event EmergencyWithdrawal(address indexed to, uint256 amount);
 // Pausable emits Paused / Unpaused.
 ```
 
-> **Removed in v6:** `LandTransferred`, `LandListed`, `LandSold` — replaced by their share-aware equivalents (`ShareTransferred`, `ShareListed`, `ShareSold`). Indexers parsing the old events must migrate.
+> **Event-name migration in v7:** `DisputeResolved` → `InheritanceDisputeResolved`. `LandMinted` no longer carries an `initialOwner` (the import flow produces multiple owners at once — listen for `ShareholderAdded` for each).
 
 ### Custom Errors
 
@@ -662,22 +737,23 @@ error LandRegistry__DuplicateNewLandId(string landId);
 // ...full list in contract.sol
 ```
 
-### Access Control Matrix (Role-Separated in v5)
+### Access Control Matrix (v7 — role-separated)
 
-| Role | Mint | Transfer | List / Buy | Initiate Inheritance | Resolve Dispute | Set Govt Authority | Pause |
-|------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| `DEFAULT_ADMIN_ROLE` | ❌ | ✅ (own land) | ✅ | ❌ | ❌ | ✅ | ❌ |
-| `MINTER_ROLE` _(v5)_ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| `INHERITANCE_ORACLE_ROLE` _(v5)_ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
-| `DISPUTE_ARBITER_ROLE` _(v5)_ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
-| `GOVT_AUTHORITY_ROLE` | ❌ | ✅ (own land) | ✅ (buy + sell) | ❌ | ❌ | ❌ | ❌ |
-| `PAUSER_ROLE` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| Registered Citizen | ❌ | ✅ (own land) | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Unregistered Wallet | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Role | Propose Import | Verify Import | Transfer | List / Buy | Initiate Inheritance | Propose Subdivision | Resolve Dispute | Set Govt Auth | Pause |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `DEFAULT_ADMIN_ROLE` | ❌ | (own share only) | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| `MINTER_ROLE` | ✅ | (own share only) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `INHERITANCE_ORACLE_ROLE` | ❌ | (own share only) | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| `SUBDIVISION_ORACLE_ROLE` _(v7)_ | ❌ | (own share only) | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| `DISPUTE_ARBITER_ROLE` | ❌ | (own share only) | ❌ | ❌ | ❌ | ❌ | ✅ (+ court CID required) | ❌ | ❌ |
+| `GOVT_AUTHORITY_ROLE` | ❌ | (own share only) | ✅ (own share) | ✅ (buy + sell) | ❌ | ❌ | ❌ | ❌ | ❌ |
+| `PAUSER_ROLE` | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Registered Citizen | ❌ | ✅ (own proposal only) | ✅ (own share) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Unregistered Wallet | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
-> **Role separation rationale:** v4 bundled mint + inheritance + dispute resolution into a single `BACKEND_ROLE`. A leaked key compromised all three. In v5 each privileged off-chain service can hold the narrowest possible authority — e.g., the minting daemon never needs (and so should never hold) the power to force-execute disputes. The constructor grants all three oracle roles to the `backend` argument for backward compatibility; the admin should `revokeRole` the ones each operator doesn't need post-deploy.
+> **Hybrid-governance rationale:** No single role can finalise a land import, an inheritance, or a subdivision alone. The MINTER / INHERITANCE_ORACLE / SUBDIVISION_ORACLE proposes; the affected on-chain stakeholders unanimously consent; the DISPUTE_ARBITER overrides only with a court-order CID pinned on IPFS. This is the on-chain enforcement of the off-chain reality that Pakistani land governance is a partnership between civil authority and judicial authority.
 
-> **All roles are independently grantable/revocable** via the OZ `AccessControl` API. **`DEFAULT_ADMIN_ROLE` should be held by a multisig** (Safe / Gnosis) in production — a single-key admin defeats the role separation by definition.
+> **All roles are independently grantable/revocable.** The constructor grants all four backend roles (MINTER, INHERITANCE_ORACLE, SUBDIVISION_ORACLE, DISPUTE_ARBITER) to the `backend` argument for ease of bootstrap; production deployments should split them across separate operator keys. **`DEFAULT_ADMIN_ROLE` should be held by a multisig** (Safe / Gnosis) — a single-key admin defeats role separation.
 
 ### Lifecycle State Machine
 
@@ -847,33 +923,51 @@ erDiagram
 
 ```solidity
 enum LandType   { RESIDENTIAL, AGRICULTURAL, COMMERCIAL }
-enum LandStatus { ACTIVE, PENDING_INHERITANCE, LOCKED_DISPUTE }   // INHERITED removed — land persists through inheritance
+enum LandStatus {
+    PROPOSED,                       // import filed; awaiting all-owner verify
+    ACTIVE,                         // operational
+    PENDING_INHERITANCE,
+    PENDING_SUBDIVISION,
+    LOCKED_IMPORT_DISPUTE,
+    LOCKED_INHERITANCE_DISPUTE,
+    LOCKED_SUBDIVISION_DISPUTE,
+    SUBDIVIDED                      // terminal — children carry the value
+}
 
-// Land identity. v6 removes currentOwner + cnic (no single value with multi-owner).
-struct LandRecord       { string landId; string ipfsHash; LandType landType; LandStatus status; uint64 verifiedAt; }
+// Land identity. proposedAt + verifiedAt anchor the import lifecycle on-chain.
+struct LandRecord         { string landId; string ipfsHash; LandType landType; LandStatus status; uint64 proposedAt; uint64 verifiedAt; }
 
-struct UserProfile      { string name; string cnic; bool isRegistered; }
+struct UserProfile        { string name; string cnic; bool isRegistered; }
 
-// Listing is now per (landId, seller) — multiple shareholders may list concurrently.
-struct Listing          { uint16 shareBpsForSale; uint256 price; address seller; bool isActive; uint64 deadline; string metadataHash; }
+// Pre-mint import — NFT and share ledger are NOT yet created.
+struct ImportProposal     { address proposer; address[] proposedOwners; uint16[] proposedShares; uint256 verificationCount; string courtOrderCid; uint256 proposalNonce; bool isCancelled; }
 
-// One row per shareholder change (mint, transfer, sale, inheritance leg).
-struct OwnershipChange  { address from; address to; uint16 shareBps; uint64 timestamp; uint256 price; }
+struct Listing            { uint16 shareBpsForSale; uint256 price; address seller; bool isActive; uint64 deadline; string metadataHash; }
 
-// Inheritance redistributes one holder's share across heirs (sum == deceased's bps).
-struct InheritanceRequest { address deceasedHolder; address[] heirs; uint16[] heirShares; uint256 approvalCount; bool isExecuted; uint256 proposalNonce; }
+struct OwnershipChange    { address from; address to; uint16 shareBps; uint64 timestamp; uint256 price; }
 
-// --- Share ledger (the v6 core) -----------------------------------------------
-//   mapping(string => address[])                    _shareholders        // enumeration
-//   mapping(string => mapping(address => uint16))   _shareBps            // O(1) bps lookup
-//   mapping(string => mapping(address => uint256))  _shareholderIndex    // swap-and-pop position
+// Inheritance — courtOrderCid populated only when an arbiter force-resolves.
+struct InheritanceRequest { address deceasedHolder; address[] heirs; uint16[] heirShares; uint256 approvalCount; bool isExecuted; uint256 proposalNonce; string courtOrderCid; }
+
+// Subdivision — court CID REQUIRED at proposal (physical-division authority).
+//   Per-new-land shareholder/share allocations live in separate mappings keyed by
+//   (parentLandId, proposalNonce, newLandIndex) to keep the struct small.
+struct SubdivisionPlan    { string[] newLandIds; string[] newIpfsHashes; string courtOrderCid; uint256 approvalCount; bool isExecuted; uint256 proposalNonce; }
+
+// Occupancy — time-bound right of use; SEPARATE from the share ledger.
+struct OccupancyAgreement { uint64 id; address grantor; address occupant; uint64 startTime; uint64 endTime; string termsCid; bool isRevoked; }
+
+// --- Share ledger -------------------------------------------------------------
+//   mapping(string => address[])                    _shareholders
+//   mapping(string => mapping(address => uint16))   _shareBps
+//   mapping(string => mapping(address => uint256))  _shareholderIndex
 //
-// Invariants (held by construction):
-//   I1: Σ _shareBps[landId][h] == 10000 for every ACTIVE land
+// Invariants (held by construction for every ACTIVE land):
+//   I1: Σ _shareBps[landId][h] == 10000
 //   I2: _shareBps[landId][h] > 0 ⇔ h ∈ _shareholders[landId]
-//   I3: _shareholders contains no duplicates
+//   I3: no duplicates in _shareholders
 //   I4: _shareholders.length ≤ MAX_SHAREHOLDERS (100)
-//   I5: every holder is an authorised holder (registered citizen or GOVT_AUTHORITY_ROLE)
+//   I5: every holder is authorised (registered citizen or GOVT_AUTHORITY_ROLE)
 ```
 
 ### Off-Chain Data (Single Govt Supabase — *mock*)
@@ -971,9 +1065,9 @@ ADMIN_PRIVATE_KEY=0xYOUR_ADMIN_WALLET_PRIVATE_KEY
 
 > ⚠️ **Security:** `ADMIN_PRIVATE_KEY` belongs to the wallet set as `verificationBackend` during contract deployment. Never commit it. Never expose it to the client.
 
-### Step 4 — Re-Deploy the Smart Contract (required for v6)
+### Step 4 — Re-Deploy the Smart Contract (required for v7)
 
-> ⚠️ **The Sepolia contract at `0xd2a855a8fC38d4E0a871319d5882E696155d1253` is the legacy v3 source.** The v6 fractional-ownership source in `contract.sol` has a fundamentally different ABI — `buyLand` is replaced by `buyShare(landId, seller, maxPrice)`, `transferLandOwnership` by `transferShare(landId, recipient, shareBps, price)`, `listLandForSale` by `listShareForSale(landId, shareBpsForSale, price, metaHash)`. Plus all v5 changes (role separation, pull payment, custom errors). Redeployment is mandatory.
+> ⚠️ **The Sepolia contract at `0xd2a855a8fC38d4E0a871319d5882E696155d1253` is the legacy v3 source.** The v7 hybrid-governance source in `contract.sol` has a fundamentally different ABI — `storeVerifiedLandRecord` is replaced by the two-phase `proposeLandImport` + `verifyLandImport` flow; new functions for legal subdivision (`proposeSubdivision`, `approveSubdivision`, `disputeSubdivision`, `resolveSubdivisionDispute`) and occupancy (`grantOccupancy`, `revokeOccupancy`); `resolveDispute` renamed to `resolveInheritanceDispute` and now takes a `courtOrderCid` argument. Plus all v5/v6 changes (fractional-ownership share ledger, role separation, pull payment, custom errors). Redeployment is mandatory.
 
 ```bash
 # In Remix IDE or your Hardhat / Foundry project:
@@ -996,25 +1090,39 @@ ADMIN_PRIVATE_KEY=0xYOUR_ADMIN_WALLET_PRIVATE_KEY
 #         want on the original `backend` wallet.
 # 5. Update CONTRACT_ADDRESS in src/utils/contract.ts
 # 6. Regenerate the ABI in src/utils/contract.ts from the new artifact
-# 7. Frontend changes needed for v6:
-#    - Replace buyLand(landId, maxPrice) with
-#      buyShare(landId, seller, maxPrice). The buyer chooses WHICH seller's
-#      listing to buy (a land may have multiple concurrent listings, one
-#      per shareholder).
-#    - Replace transferLandOwnership(landId, newOwner, price) with
-#      transferShare(landId, recipient, shareBps, price). To transfer 100%
-#      pass shareBps = 10000.
-#    - Replace listLandForSale(landId, price, metaHash) with
-#      listShareForSale(landId, shareBpsForSale, price, metaHash).
-#    - Inheritance payload changes: { landId, deceasedHolder, heirs[],
-#      heirShares[] } where heirShares is bps (sum == deceased's share).
-#    - LandRecord no longer has currentOwner — render via getShareholders /
-#      getShareholdersWithBps.
-#    - Marketplace UI should support listing/buying partial shares (show
-#      "buy 25% of plot X" rather than "buy plot X").
-#    - After a buyShare confirms, the seller's UI should expose a
-#      "Withdraw proceeds" button calling withdrawProceeds().
-#    - updateListingPrice still reverts if newPrice >= currentPrice.
+# 7. Frontend changes needed for v7:
+#    - Import flow is now TWO-PHASE:
+#      a. Backend calls proposeLandImport(landId, ipfsHash, lType,
+#         proposedOwners[], proposedShares[], courtOrderCid). NFT is
+#         NOT minted; status = PROPOSED.
+#      b. Each proposed owner connects their wallet and calls
+#         verifyLandImport(landId). The dashboard should show pending
+#         imports for the connected wallet (filter via the
+#         LandImportProposed event's proposedOwners[]). NFT mints
+#         automatically when the last owner verifies.
+#      c. Owners can dispute via disputeLandImport(landId).
+#      d. Arbiter resolves via resolveLandImportDispute(landId, force,
+#         courtOrderCid).
+#    - Share / marketplace API stays the same as v6:
+#      transferShare, listShareForSale, buyShare(landId, seller, maxPrice),
+#      cancelListing, updateListingPrice, withdrawProceeds.
+#    - Inheritance unchanged from v6 except resolveDispute is renamed
+#      resolveInheritanceDispute(landId, force, courtOrderCid) — pass the
+#      court order CID when force=true.
+#    - Legal subdivision is a NEW workflow:
+#      proposeSubdivision(parentLandId, newLandIds[], newIpfsHashes[],
+#        newLandShareholders[][], newLandShares[][], courtOrderCid).
+#      Each parent shareholder calls approveSubdivision(parentLandId);
+#      auto-executes at unanimous. Dispute path mirrors inheritance.
+#    - Occupancy is a NEW concept SEPARATE from ownership:
+#      grantOccupancy(landId, occupant, startTime, endTime, termsCid).
+#      Render as "Current tenant: X (until DD-MM-YYYY)" in the land detail
+#      view. The shareholder list is unchanged when occupancy changes.
+#    - LandStatus has 8 states now (vs 3 in v6). Render distinct UI for
+#      PROPOSED (yellow — "awaiting verification by N owners"),
+#      PENDING_INHERITANCE / PENDING_SUBDIVISION (blue — "vote pending"),
+#      LOCKED_* (red — "arbiter resolution needed"),
+#      SUBDIVIDED (grey — "this land has been subdivided into <children>").
 ```
 
 ### Step 5 — Run the Dev Server
@@ -1223,6 +1331,7 @@ flowchart LR
 | 15 | **v3 contract had 11 audit-class issues** — stuck overpayments in `buyLand`, stale listings after direct transfer, stale `hasApproved` after dispute reset, duplicate-heir deadlock, last-vote DoS on landId collision, immutable backend (no rotation), no pause mechanism, no reentrancy guard, no event on govt-authority changes, govt authority couldn't buy on marketplace, deceased's owner-index not cleaned on burn | **v4 refactor:** swapped `Ownable` for `AccessControl` (3 rotatable roles), added `Pausable` + `ReentrancyGuard`, introduced `proposalNonce` for inheritance vote scoping, pre-validated all inheritance inputs, overrode `_update` to auto-clear stale listings, refunded buyer overpays, replaced every `require` string with custom errors, added `LandStatus.INHERITED` terminal state, added `updateListingPrice`. See *Bugs Fixed in v4* table above. |
 | 16 | **v4 still had structural security weaknesses** — push payments in `buyLand` could be griefed by malicious-seller `receive()`; `BACKEND_ROLE` bundled mint + inheritance + dispute (compromise = full powers); `updateListingPrice` allowed silent raises enabling seller-side front-running; `buyLand` had no buyer-side price-slippage guard; `nonReentrant` was only on `buyLand` (not on other NFT-callback paths); user strings had no length cap; `emergencyWithdraw` could theoretically drain seller escrow | **v5 security hardening:** pull-payment escrow (`_pendingWithdrawals` + `withdrawProceeds`); role separation into `MINTER_ROLE` / `INHERITANCE_ORACLE_ROLE` / `DISPUTE_ARBITER_ROLE`; `maxPrice` parameter on `buyLand`; decrease-only `updateListingPrice`; `nonReentrant` on every NFT-mutating external function; `MAX_STRING_LENGTH` cap + `boundedString` modifier; `_totalPendingWithdrawals` accounting protects seller escrow from `emergencyWithdraw`; `withdrawProceeds` not gated by `pause`; heir ≠ current owner sanity check; `Address.sendValue` for all outgoing ETH. |
 | 17 | **The "one land = one owner" model was conceptually wrong.** Inheritance burned the original NFT and minted a fresh NFT per heir — modelling succession as forced physical subdivision. In reality, when a Pakistani allottee dies leaving three children, those children become **co-owners** of the same plot, not three new plots. The model also lost NFT identity continuity (new tokenIds break provenance trackers / indexers) and provided no way to sell a partial share. | **v6 fractional-ownership refactor:** introduced a basis-point share ledger (`_shareBps[landId][holder]`, `TOTAL_SHARES = 10000`). Each land has exactly one NFT for its lifetime; ownership is the share ledger. Five invariants (Σ shares = 10000, no zero-share holders, no duplicates, ≤ MAX_SHAREHOLDERS, all holders authorised). Inheritance now redistributes the deceased's shares — no burn, no remint, other co-owners untouched. Added `transferShare`, `listShareForSale`, `buyShare(landId, seller, maxPrice)` for partial-ownership operations. NFT is self-custodial (minted to `address(this)`) — `_update` override rejects all post-mint transitions, preventing accidental NFT movement that would desync from the share ledger. |
+| 18 | **v6 still treated the backend as a unilateral oracle**: `storeVerifiedLandRecord` minted the NFT immediately on the backend's say-so, with no on-chain check that the proposed co-owners agreed with the imported share split. A corrupt or erroneous backend could silently mint to wrong owners. The model also had no on-chain workflow for *deliberate* legal subdivision (when heirs actually do want separate plots) and no on-chain expression of occupancy / use-rights distinct from ownership. | **v7 hybrid-governance refactor:** Pakistani land governance is explicitly modelled as hybrid (chain holds identity; courts, the developer registry, and proposed owners themselves hold legal authority). Three changes anchor this: (a) **Land import is two-phase** — `proposeLandImport` files a record with proposed co-owners and shares; each owner calls `verifyLandImport`; the NFT mints + share ledger populates only after ALL verify. (b) **Legal subdivision is a first-class workflow** — `SUBDIVISION_ORACLE_ROLE` files a court-anchored plan with per-child shareholder/share allocations; ALL current shareholders must approve; on execution the parent NFT is burned (status → `SUBDIVIDED`, terminal) and N new child NFTs are minted with their own share ledgers. (c) **Occupancy / use-right agreements** are a separate ledger from ownership — any shareholder can grant a time-bound right of use to a non-owner; does NOT affect the share ledger. Every dispute-arbiter override now requires a `courtOrderCid` (IPFS) — every legal-authority override is publicly auditable. `BACKEND_ROLE` further split into `MINTER` / `INHERITANCE_ORACLE` / `SUBDIVISION_ORACLE` / `DISPUTE_ARBITER` for tightest least-privilege. Eight-state lifecycle. |
 
 ---
 
