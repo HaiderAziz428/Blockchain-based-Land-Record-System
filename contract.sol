@@ -745,6 +745,22 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
         uint256 proposalNonce;
     }
 
+    /// @notice Calldata input bundle for `proposeSubdivision`.
+    ///
+    /// @dev    Collapses the seven proposal inputs into one struct so the
+    ///         function's stack frame fits in the EVM's 16-slot window
+    ///         (the un-bundled signature triggers `Stack too deep` even
+    ///         with the optimizer enabled, when Via IR is not active).
+    ///         Functionally identical to passing the fields individually.
+    struct SubdivisionProposalInput {
+        string[] newLandIds;
+        string[] newIpfsHashes;
+        address[][] newLandShareholders;
+        uint16[][] newLandShares;
+        string courtOrderCid;
+        string surveyMetadataCid;
+    }
+
     /// @notice Broad legal category of a use-right agreement. Helps
     ///         frontends render "Tenant: X (residential lease until DD-MM-YYYY)"
     ///         vs. "Farmer-of-record: Y (agricultural lease until ...)".
@@ -2234,67 +2250,78 @@ contract LandRegistry is ERC721, AccessControl, Pausable, ReentrancyGuard {
      *         own fresh share ledger. The ONLY operation in the contract
      *         that creates new land NFTs after initial import.
      *
-     * @param  courtOrderCid     IPFS CID of the signed court order
-     *                           authorising the subdivision (the LEGAL
-     *                           AUTHORITY for the split).
-     * @param  surveyMetadataCid IPFS CID of the survey / planning document
-     *                           specifying boundaries, area, new plot IDs
-     *                           (the TECHNICAL SPECIFICATION). Both CIDs
-     *                           are pinned on-chain so the resulting child
-     *                           NFTs are tied to a verifiable physical
-     *                           description.
+     * @param  parentLandId  Land ID of the parcel being subdivided.
+     * @param  input         Bundled proposal payload (`SubdivisionProposalInput`):
+     *                         - `newLandIds[]`     — child land IDs (unique, bounded)
+     *                         - `newIpfsHashes[]`  — ERC-721 metadata CIDs per child
+     *                         - `newLandShareholders[][]` — per-child shareholder lists
+     *                         - `newLandShares[][]`        — parallel bps arrays (each row sums to TOTAL_SHARES)
+     *                         - `courtOrderCid`    — IPFS CID of the signed court order
+     *                                                authorising the split (LEGAL AUTHORITY)
+     *                         - `surveyMetadataCid` — IPFS CID of the survey / planning
+     *                                                 document specifying boundaries,
+     *                                                 area, new plot IDs (TECHNICAL SPEC)
      *
      * @dev    Requires:
      *           1. `REGISTRAR_ROLE` (the legal / survey operator)
-     *           2. Non-empty `courtOrderCid` AND `surveyMetadataCid`
+     *           2. Non-empty `input.courtOrderCid` AND `input.surveyMetadataCid`
+     *              (validated inline rather than via `boundedString` modifier
+     *              so the function's stack frame stays under the EVM's 16-slot
+     *              limit — see `SubdivisionProposalInput` struct doc).
      *           3. UNANIMOUS approval from current shareholders of the
      *              parent (tier 1), OR an arbiter override (tier 2) with
      *              the full v8 audit payload.
      *
      *         Per-new-land shareholder/share allocations live in nested
-     *         calldata arrays; each must sum to TOTAL_SHARES.
+     *         calldata arrays inside `input`; each row must sum to TOTAL_SHARES.
      */
     function proposeSubdivision(
         string calldata parentLandId,
-        string[] calldata newLandIds,
-        string[] calldata newIpfsHashes,
-        address[][] calldata newLandShareholders,
-        uint16[][] calldata newLandShares,
-        string calldata courtOrderCid,
-        string calldata surveyMetadataCid
+        SubdivisionProposalInput calldata input
     )
         external
         onlyRole(REGISTRAR_ROLE)
         whenNotPaused
         landMustExist(parentLandId)
         onlyActive(parentLandId)
-        boundedString(courtOrderCid)
-        boundedString(surveyMetadataCid)
     {
-        _validateSubdivisionInputs(newLandIds, newIpfsHashes, newLandShareholders, newLandShares);
+        // Inline the boundedString checks (modifiers would re-pin the input
+        // strings on the stack and re-trigger "stack too deep" without
+        // Via IR — inlining keeps the modifier count down).
+        uint256 cLen = bytes(input.courtOrderCid).length;
+        if (cLen == 0 || cLen > MAX_STRING_LENGTH) revert LandRegistry__InvalidStringLength();
+        uint256 sLen = bytes(input.surveyMetadataCid).length;
+        if (sLen == 0 || sLen > MAX_STRING_LENGTH) revert LandRegistry__InvalidStringLength();
+
+        _validateSubdivisionInputs(
+            input.newLandIds,
+            input.newIpfsHashes,
+            input.newLandShareholders,
+            input.newLandShares
+        );
 
         SubdivisionPlan storage plan = _subdivisionPlans[parentLandId];
         uint256 nonce = plan.proposalNonce + 1;
 
-        plan.newLandIds = newLandIds;
-        plan.newIpfsHashes = newIpfsHashes;
-        plan.courtOrderCid = courtOrderCid;
-        plan.surveyMetadataCid = surveyMetadataCid;
+        plan.newLandIds = input.newLandIds;
+        plan.newIpfsHashes = input.newIpfsHashes;
+        plan.courtOrderCid = input.courtOrderCid;
+        plan.surveyMetadataCid = input.surveyMetadataCid;
         plan.approvalCount = 0;
         plan.isExecuted = false;
         plan.proposalNonce = nonce;
 
-        uint256 m = newLandIds.length;
+        uint256 m = input.newLandIds.length;
         for (uint256 i = 0; i < m; ) {
-            _newLandShareholders[parentLandId][nonce][i] = newLandShareholders[i];
-            _newLandShares[parentLandId][nonce][i] = newLandShares[i];
+            _newLandShareholders[parentLandId][nonce][i] = input.newLandShareholders[i];
+            _newLandShares[parentLandId][nonce][i] = input.newLandShares[i];
             unchecked {
                 ++i;
             }
         }
 
         _landRecords[parentLandId].status = LandStatus.PENDING_SUBDIVISION;
-        emit SubdivisionProposed(parentLandId, m, courtOrderCid, surveyMetadataCid, nonce);
+        emit SubdivisionProposed(parentLandId, m, input.courtOrderCid, input.surveyMetadataCid, nonce);
         emit LandStatusChanged(parentLandId, LandStatus.PENDING_SUBDIVISION);
     }
 
