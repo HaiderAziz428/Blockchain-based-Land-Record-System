@@ -38,11 +38,18 @@ export default function DigitizationModal({ isOpen, onClose, landId, onSuccess }
     if (!file || !landId) return;
     setErrorMsg('');
 
-    // ── Step 1: Upload physical document to IPFS ──────────────────────────
-    setStep('uploading_doc');
-    const docCid = await uploadFileToIPFS(file, `LandDoc_${landId}`);
+    let docCid: string | null = null;
+    try {
+      // ── Step 1: Upload physical document to IPFS ────────────────────────
+      setStep('uploading_doc');
+      docCid = await uploadFileToIPFS(file, `LandDoc_${landId}`);
+    } catch (err) {
+      setErrorMsg((err as Error).message);
+      setStep('error');
+      return;
+    }
     if (!docCid) {
-      setErrorMsg('Document upload to IPFS failed. Check your Pinata API keys and internet connection.');
+      setErrorMsg('Document upload to IPFS returned no CID.');
       setStep('error');
       return;
     }
@@ -74,9 +81,16 @@ export default function DigitizationModal({ isOpen, onClose, landId, onSuccess }
       ],
     };
 
-    const cidResult = await uploadJSONToIPFS(metadata, `LandMetadata_${landId}`);
+    let cidResult: string | null = null;
+    try {
+      cidResult = await uploadJSONToIPFS(metadata, `LandMetadata_${landId}`);
+    } catch (err) {
+      setErrorMsg((err as Error).message);
+      setStep('error');
+      return;
+    }
     if (!cidResult) {
-      setErrorMsg('Metadata pinning to IPFS failed.');
+      setErrorMsg('Metadata pinning returned no CID.');
       setStep('error');
       return;
     }
