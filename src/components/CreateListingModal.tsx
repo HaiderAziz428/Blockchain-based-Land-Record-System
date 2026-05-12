@@ -66,49 +66,54 @@ export default function CreateListingModal({ isOpen, onClose, land, sellerAddres
     setPrepError('');
     processedRef.current = false;
 
-    // ── 1. Upload photos to IPFS (max 3) ─────────────────────────────────
-    setPrepStep('uploading_photos');
-    const photoHashes: string[] = [];
-    const limit = Math.min(files.length, 3);
-    for (let i = 0; i < limit; i++) {
-      const photoCid = await uploadFileToIPFS(files[i], `Photo_${land.land_id}_${i + 1}`);
-      if (photoCid) photoHashes.push(photoCid);
-    }
-    if (photoHashes.length === 0) {
-      setPrepError('Photo upload failed. Check Pinata API keys.');
-      setPrepStep('idle');
-      return;
-    }
+    try {
+      // ── 1. Upload photos to IPFS (max 3) ───────────────────────────────
+      setPrepStep('uploading_photos');
+      const photoHashes: string[] = [];
+      const limit = Math.min(files.length, 3);
+      for (let i = 0; i < limit; i++) {
+        const photoCid = await uploadFileToIPFS(files[i], `Photo_${land.land_id}_${i + 1}`);
+        if (photoCid) photoHashes.push(photoCid);
+      }
+      if (photoHashes.length === 0) {
+        setPrepError('No photos were pinned. Add at least one photo and retry.');
+        setPrepStep('idle');
+        return;
+      }
 
-    // ── 2. Build & pin listing metadata JSON ─────────────────────────────
-    setPrepStep('uploading_metadata');
-    const metadata = {
-      name: `Listing – ${land.land_id}`,
-      description: desc,
-      land_id: land.land_id,
-      location: land.location,
-      area_sq_yards: land.area_sq_yards ?? null,
-      land_type: landType,
-      price_eth: parseFloat(price),
-      whatsapp_contact: whatsapp || null,
-      photos: photoHashes.map((h) => `ipfs://${h}`),
-    };
-    const listingCid = await uploadJSONToIPFS(metadata, `Listing_${land.land_id}`);
-    if (!listingCid) {
-      setPrepError('Metadata pinning to IPFS failed.');
-      setPrepStep('idle');
-      return;
-    }
-    setMetadataCid(listingCid);
-    setPrepStep('ready');
+      // ── 2. Build & pin listing metadata JSON ─────────────────────────────
+      setPrepStep('uploading_metadata');
+      const metadata = {
+        name: `Listing – ${land.land_id}`,
+        description: desc,
+        land_id: land.land_id,
+        location: land.location,
+        area_sq_yards: land.area_sq_yards ?? null,
+        land_type: landType,
+        price_eth: parseFloat(price),
+        whatsapp_contact: whatsapp || null,
+        photos: photoHashes.map((h) => `ipfs://${h}`),
+      };
+      const listingCid = await uploadJSONToIPFS(metadata, `Listing_${land.land_id}`);
+      if (!listingCid) {
+        setPrepError('Metadata pinning to IPFS failed.');
+        setPrepStep('idle');
+        return;
+      }
+      setMetadataCid(listingCid);
+      setPrepStep('ready');
 
-    // ── 3. Call listLandForSale on-chain with the IPFS CID ────────────────
-    writeContract({
-      address: CONTRACT_ADDRESS as `0x${string}`,
-      abi: CONTRACT_ABI,
-      functionName: 'listLandForSale',
-      args: [land.land_id, parseEther(price), listingCid],
-    });
+      // ── 3. Call listLandForSale on-chain with the IPFS CID ────────────────
+      writeContract({
+        address: CONTRACT_ADDRESS as `0x${string}`,
+        abi: CONTRACT_ABI,
+        functionName: 'listLandForSale',
+        args: [land.land_id, parseEther(price), listingCid],
+      });
+    } catch (err) {
+      setPrepError((err as Error).message);
+      setPrepStep('idle');
+    }
   };
 
   const isIpfsBusy = prepStep === 'uploading_photos' || prepStep === 'uploading_metadata';
