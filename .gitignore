@@ -42,3 +42,12 @@ next-env.d.ts
 
 # Foundry env (private keys)
 .env
+
+# Foundry build artifacts (not part of Next.js app)
+/broadcast/
+/cache/
+/contracts/
+/foundry.toml
+/lib/
+/script/
+INSTRUCTIONS.md

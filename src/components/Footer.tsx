@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { Landmark, ExternalLink, Github } from 'lucide-react';
-import { CONTRACT_ADDRESS } from '@/src/utils/contract';
+import { CONTRACT_V9_ADDRESS } from '@/src/utils/contractV9';
 
 const PRODUCT_LINKS = [
   { label: 'Home', href: '/' },
@@ -15,7 +15,7 @@ const PORTAL_LINKS = [
 
 export default function Footer() {
   const year = new Date().getFullYear();
-  const etherscan = `https://sepolia.etherscan.io/address/${CONTRACT_ADDRESS}`;
+  const etherscan = `https://sepolia.etherscan.io/address/${CONTRACT_V9_ADDRESS}`;
 
   return (
     <footer className="mt-16 border-t border-white/[0.05] bg-[#0a0b1e]">
@@ -113,7 +113,7 @@ export default function Footer() {
               </li>
               <li className="pt-1">
                 <p className="text-[11px] text-gray-600 break-all font-mono leading-relaxed">
-                  {CONTRACT_ADDRESS}
+                  {CONTRACT_V9_ADDRESS}
                 </p>
               </li>
             </ul>

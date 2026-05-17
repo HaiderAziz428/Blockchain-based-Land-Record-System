@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAccount, useReadContract } from 'wagmi';
-import { CONTRACT_ABI, CONTRACT_ADDRESS } from '@/src/utils/contract';
+import { CONTRACT_V9_ABI, CONTRACT_V9_ADDRESS } from '@/src/utils/contractV9';
 import UserAuthModal from './UserAuthModal';
 import { User, Building2, ArrowRight, Loader2, Lock, CheckCircle, AlertCircle } from 'lucide-react';
 
@@ -20,15 +20,15 @@ export default function PortalSelection() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const { data: userData, isLoading: isBlockchainLoading } = useReadContract({
-    address: CONTRACT_ADDRESS as `0x${string}`,
-    abi: CONTRACT_ABI,
-    functionName: 'users',
+    address: CONTRACT_V9_ADDRESS,
+    abi: CONTRACT_V9_ABI,
+    functionName: 'getUser',
     args: [address as `0x${string}`],
     query: { enabled: !!address && isConnected },
   });
 
-  const profile = userData as readonly [string, string, boolean] | undefined;
-  const isRegistered = Boolean(profile?.[2]);
+  const profile = userData as { name: string; cnic: string; isRegistered: boolean } | undefined;
+  const isRegistered = Boolean(profile?.isRegistered);
 
   const handleUserPortalClick = async () => {
     if (!isConnected) { setNotice('Connect your wallet first — top-right Connect button.'); return; }
@@ -36,7 +36,7 @@ export default function PortalSelection() {
     setIsChecking(true);
     if (isRegistered) {
       localStorage.setItem('verified_user', JSON.stringify({
-        full_name: profile?.[0], cnic: profile?.[1], onChain: true,
+        full_name: profile?.name, cnic: profile?.cnic, onChain: true,
       }));
       router.push('/dashboard/user');
     } else {
