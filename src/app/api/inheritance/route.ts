@@ -2,33 +2,47 @@ import { NextResponse } from 'next/server';
 import { createWalletClient, createPublicClient, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { sepolia } from 'viem/chains';
-import { CONTRACT_ABI, CONTRACT_ADDRESS } from '@/src/utils/contract';
+import { CONTRACT_V9_ABI, CONTRACT_V9_ADDRESS } from '@/src/utils/contractV9';
 
 const RPC_URL = 'https://ethereum-sepolia.publicnode.com';
 
+/**
+ * POST /api/inheritance
+ *
+ * REGISTRAR initiates an inheritance case for a deceased shareholder.
+ *
+ * Body: {
+ *   landId: string,
+ *   deceasedHolder: string,           // 0x… address
+ *   courtOrderCid: string,
+ *   appealId: number,                 // 0 if no appeal filed
+ *   heirs: { address: string; shareBps: number }[]
+ * }
+ *
+ * Heir shares must sum to exactly the deceased holder's current share balance.
+ */
 export async function POST(request: Request) {
   const adminPrivateKey = process.env.ADMIN_PRIVATE_KEY;
   if (!adminPrivateKey) {
-    return NextResponse.json({ error: 'Server misconfigured: missing ADMIN_PRIVATE_KEY' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Server misconfigured: missing ADMIN_PRIVATE_KEY' },
+      { status: 500 }
+    );
   }
 
   try {
     const body = await request.json();
-    const { oldLandId, heirs, newLandIds, newIpfsHashes } = body as {
-      oldLandId: string;
-      heirs: string[];
-      newLandIds: string[];
-      newIpfsHashes: string[];
+    const { landId, deceasedHolder, courtOrderCid, appealId, heirs } = body as {
+      landId: string;
+      deceasedHolder: string;
+      courtOrderCid: string;
+      appealId: number;
+      heirs: { address: string; shareBps: number }[];
     };
 
-    if (
-      !oldLandId ||
-      !heirs?.length ||
-      heirs.length !== newLandIds?.length ||
-      heirs.length !== newIpfsHashes?.length
-    ) {
+    if (!landId || !deceasedHolder || !Array.isArray(heirs) || heirs.length === 0) {
       return NextResponse.json(
-        { error: 'Invalid input: oldLandId, heirs, newLandIds, newIpfsHashes must be non-empty and equal length' },
+        { error: 'Missing required fields: landId, deceasedHolder, heirs' },
         { status: 400 }
       );
     }
@@ -37,21 +51,33 @@ export async function POST(request: Request) {
     const walletClient = createWalletClient({ account, chain: sepolia, transport: http(RPC_URL) });
     const publicClient = createPublicClient({ chain: sepolia, transport: http(RPC_URL) });
 
+    const heirAddresses = heirs.map((h) => h.address as `0x${string}`);
+    const heirShares = heirs.map((h) => h.shareBps);
+
+    console.log(`API /api/inheritance: initiateInheritance ${landId} deceased=${deceasedHolder} heirs=${heirAddresses.length}`);
+
     const { request: txRequest } = await publicClient.simulateContract({
       account,
-      address: CONTRACT_ADDRESS,
-      abi: CONTRACT_ABI,
+      address: CONTRACT_V9_ADDRESS,
+      abi: CONTRACT_V9_ABI,
       functionName: 'initiateInheritance',
-      args: [oldLandId, heirs as `0x${string}`[], newLandIds, newIpfsHashes],
+      args: [
+        landId,
+        deceasedHolder as `0x${string}`,
+        heirAddresses,
+        heirShares,
+        courtOrderCid || '',
+        BigInt(appealId ?? 0),
+      ],
     });
 
     const txHash = await walletClient.writeContract(txRequest);
-    console.log(`Inheritance initiated for ${oldLandId}: ${txHash}`);
+    console.log(`  initiateInheritance tx: ${txHash}`);
 
     return NextResponse.json({ success: true, txHash });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Internal Server Error';
-    console.error('Inheritance API Error:', message);
+    console.error('API /api/inheritance error:', message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

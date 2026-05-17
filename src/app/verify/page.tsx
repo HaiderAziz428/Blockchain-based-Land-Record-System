@@ -1,378 +1,576 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useReadContract, usePublicClient } from 'wagmi';
-import { parseAbiItem } from 'viem';
-import { CONTRACT_ABI, CONTRACT_ADDRESS } from '@/src/utils/contract';
+import { useState } from 'react';
+import { usePublicClient } from 'wagmi';
 import Navbar from '@/src/components/Navbar';
-import { Search, Loader2, CheckCircle2, AlertCircle, ExternalLink, FileText, ShieldCheck, ShieldAlert, Clock } from 'lucide-react';
+import {
+  CONTRACT_V9_ABI,
+  CONTRACT_V9_ADDRESS,
+  LandStatusV9,
+  LandTypeV9,
+  formatBps,
+  landStatusLabel,
+  landTypeLabel,
+} from '@/src/utils/contractV9';
+import {
+  AlertCircle,
+  ArrowRight,
+  CheckCircle2,
+  Clock,
+  ExternalLink,
+  FileText,
+  Loader2,
+  Search,
+  ShieldAlert,
+  ShieldCheck,
+  Users,
+} from 'lucide-react';
+import { formatEther } from 'viem';
 
-const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+const IPFS_GATEWAY = 'https://gateway.pinata.cloud/ipfs';
 
-// Public Sepolia RPCs cap eth_getLogs at 10k blocks. Stay safely under that.
-const MAX_LOG_RANGE = BigInt(9500);
-// Sepolia averages ~12s per block — used to translate verifiedAt → block range.
-const SEPOLIA_BLOCK_TIME_SECS = BigInt(12);
-// Padding to absorb block-time drift around the mint timestamp.
-const BLOCK_PADDING = BigInt(1000);
+const STATUS_META: Record<number, { tone: string; Icon: React.ComponentType<{ size?: number; className?: string }> }> = {
+  [LandStatusV9.PENDING_VERIFICATION]:       { tone: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20', Icon: Clock },
+  [LandStatusV9.ACTIVE]:                     { tone: 'bg-green-500/10 text-green-400 border-green-500/20',  Icon: CheckCircle2 },
+  [LandStatusV9.PENDING_INHERITANCE]:        { tone: 'bg-orange-500/10 text-orange-400 border-orange-500/20', Icon: Clock },
+  [LandStatusV9.PENDING_SUBDIVISION]:        { tone: 'bg-blue-500/10 text-blue-400 border-blue-500/20',   Icon: Clock },
+  [LandStatusV9.LOCKED_IMPORT_DISPUTE]:      { tone: 'bg-red-500/10 text-red-400 border-red-500/20',     Icon: ShieldAlert },
+  [LandStatusV9.LOCKED_INHERITANCE_DISPUTE]: { tone: 'bg-red-500/10 text-red-400 border-red-500/20',     Icon: ShieldAlert },
+  [LandStatusV9.LOCKED_SUBDIVISION_DISPUTE]: { tone: 'bg-red-500/10 text-red-400 border-red-500/20',     Icon: ShieldAlert },
+  [LandStatusV9.SUBDIVIDED]:                 { tone: 'bg-gray-500/10 text-gray-400 border-gray-500/20',  Icon: ShieldCheck },
+};
 
-interface HistoryEvent {
-  type: 'MINT' | 'TRANSFER';
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type LandRecord = {
+  landId: string;
+  ipfsHash: string;
+  landType: number;
+  status: number;
+  proposedAt: bigint;
+  verifiedAt: bigint;
+};
+
+type UserProfile = { name: string; cnic: string; isRegistered: boolean };
+
+type Shareholder = {
+  address: string;
+  bps: number;
+  profile?: UserProfile;
+};
+
+type OwnershipChange = {
   from: string;
   to: string;
-  txHash: string;
-  blockNumber: bigint;
+  shareBps: number;
+  timestamp: bigint;
+  price: bigint;
+};
+
+type ImportProposal = {
+  proposer: string;
+  proposedOwners: string[];
+  proposedShares: number[];
+  verificationCount: bigint;
+  courtOrderCid: string;
+  verificationDeadline: bigint;
+};
+
+type InheritanceRequest = {
+  deceasedHolder: string;
+  heirs: string[];
+  heirShares: number[];
+  approvalCount: bigint;
+  isExecuted: boolean;
+  courtOrderCid: string;
+  votingDeadline: bigint;
+};
+
+type SubdivisionPlan = {
+  newLandIds: string[];
+  courtOrderCid: string;
+  approvalCount: bigint;
+  isExecuted: boolean;
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+const ZERO = '0x0000000000000000000000000000000000000000';
+
+function maskCnic(cnic: string) {
+  if (!cnic || cnic.length < 5) return cnic;
+  return cnic.slice(0, 5) + '-XXXXX-X';
 }
 
-const STATUS_META: Record<number, { label: string; tone: string; icon: React.ComponentType<{ size?: number; className?: string }> }> = {
-  0: { label: 'Active', tone: 'bg-green-500/10 text-green-400 border-green-500/20', icon: CheckCircle2 },
-  1: { label: 'Pending Inheritance', tone: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20', icon: Clock },
-  2: { label: 'Locked / Disputed', tone: 'bg-red-500/10 text-red-400 border-red-500/20', icon: ShieldAlert },
-};
+function shortAddr(addr: string) {
+  return `${addr.slice(0, 8)}…${addr.slice(-6)}`;
+}
+
+function fmtDate(ts: bigint) {
+  return new Date(Number(ts) * 1000).toLocaleString('en-PK', {
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
 
 export default function VerifyPage() {
   const [searchId, setSearchId] = useState('');
-  const [queryId, setQueryId] = useState('');
-  const [history, setHistory] = useState<HistoryEvent[]>([]);
-  const [loadingHistory, setLoadingHistory] = useState(false);
-  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [queriedId, setQueriedId] = useState('');
+  const [record, setRecord] = useState<LandRecord | null>(null);
+  const [shareholders, setShareholders] = useState<Shareholder[]>([]);
+  const [history, setHistory] = useState<OwnershipChange[]>([]);
+  const [importProposal, setImportProposal] = useState<ImportProposal | null>(null);
+  const [inheritanceRequest, setInheritanceRequest] = useState<InheritanceRequest | null>(null);
+  const [subdivisionPlan, setSubdivisionPlan] = useState<SubdivisionPlan | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const publicClient = usePublicClient();
 
-  const { data: landRecord, isLoading, isError } = useReadContract({
-    address: CONTRACT_ADDRESS,
-    abi: CONTRACT_ABI,
-    functionName: 'getLandRecord',
-    args: queryId ? [queryId] : undefined,
-    query: { enabled: !!queryId, retry: false },
-  });
+  // Resolve a wallet address to its registered name (best-effort)
+  const resolveUser = async (addr: string): Promise<UserProfile | undefined> => {
+    if (!publicClient || !addr || addr === ZERO) return undefined;
+    try {
+      return (await publicClient.readContract({
+        address: CONTRACT_V9_ADDRESS,
+        abi: CONTRACT_V9_ABI,
+        functionName: 'getUser',
+        args: [addr as `0x${string}`],
+      })) as UserProfile;
+    } catch { return undefined; }
+  };
 
-  /**
-   * Fetch on-chain history for a land starting at its mint block.
-   *
-   * Public Sepolia RPCs (publicnode, thirdweb default) limit eth_getLogs to a
-   * 10,000-block range, so we cannot use fromBlock: 'earliest'. Instead, we use
-   * the LandRecord.verifiedAt timestamp (which is the mint block timestamp) to
-   * estimate the mint block, then scan forward in chunked windows until we
-   * reach the current head.
-   */
-  const fetchHistory = async (landId: string, verifiedAtSecs: bigint) => {
-    if (!publicClient) return;
-    setLoadingHistory(true);
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const id = searchId.trim();
+    if (!id || !publicClient) return;
+
+    setQueriedId(id);
+    setIsLoading(true);
+    setError(null);
+    setRecord(null);
+    setShareholders([]);
     setHistory([]);
-    setHistoryError(null);
+    setImportProposal(null);
+    setInheritanceRequest(null);
+    setSubdivisionPlan(null);
 
     try {
-      const latest = await publicClient.getBlockNumber();
+      // ── 1. Core land record ───────────────────────────────────────────────
+      const r = (await publicClient.readContract({
+        address: CONTRACT_V9_ADDRESS,
+        abi: CONTRACT_V9_ABI,
+        functionName: 'getLandRecord',
+        args: [id],
+      })) as LandRecord;
 
-      // Estimate the mint block from verifiedAt timestamp.
-      const nowSecs = BigInt(Math.floor(Date.now() / 1000));
-      const ageSecs = nowSecs > verifiedAtSecs ? nowSecs - verifiedAtSecs : BigInt(0);
-      const blocksAgo = ageSecs / SEPOLIA_BLOCK_TIME_SECS;
-      const estimatedMintBlock = latest > blocksAgo + BLOCK_PADDING
-        ? latest - blocksAgo - BLOCK_PADDING
-        : BigInt(0);
+      if (!r.landId || r.landId === '') {
+        setError('Land not found. Check the Land ID and try again.');
+        setIsLoading(false);
+        return;
+      }
+      setRecord(r);
 
-      const transferEvent = parseAbiItem(
-        'event LandTransferred(string landId, address indexed from, address indexed to, uint256 price)'
-      );
-      const mintEvent = parseAbiItem(
-        'event LandMinted(address indexed owner, string landId, uint8 lType, uint256 tokenId)'
-      );
+      // ── 2. Current shareholders + their registered names ──────────────────
+      try {
+        const holders = (await publicClient.readContract({
+          address: CONTRACT_V9_ADDRESS,
+          abi: CONTRACT_V9_ABI,
+          functionName: 'getShareholders',
+          args: [id],
+        })) as string[];
 
-      const events: HistoryEvent[] = [];
+        const withDetails = await Promise.all(
+          holders.map(async (addr): Promise<Shareholder> => {
+            const [bps, profile] = await Promise.all([
+              publicClient.readContract({
+                address: CONTRACT_V9_ADDRESS,
+                abi: CONTRACT_V9_ABI,
+                functionName: 'getShareBps',
+                args: [id, addr as `0x${string}`],
+              }) as Promise<number>,
+              resolveUser(addr),
+            ]);
+            return { address: addr, bps: Number(bps), profile };
+          })
+        );
+        setShareholders(withDetails);
+      } catch { /* non-critical */ }
 
-      // Walk from the estimated mint block forward to head, in chunks safely
-      // under the 10k-block public-RPC limit.
-      let from = estimatedMintBlock;
-      while (from <= latest) {
-        const to = from + MAX_LOG_RANGE > latest ? latest : from + MAX_LOG_RANGE;
+      // ── 3. Full ownership history ─────────────────────────────────────────
+      try {
+        const raw = (await publicClient.readContract({
+          address: CONTRACT_V9_ADDRESS,
+          abi: CONTRACT_V9_ABI,
+          functionName: 'getOwnershipHistory',
+          args: [id],
+        })) as OwnershipChange[];
+        setHistory(raw);
+      } catch { /* non-critical */ }
 
-        const [transferLogs, mintLogs] = await Promise.all([
-          publicClient.getLogs({
-            address: CONTRACT_ADDRESS,
-            event: transferEvent,
-            fromBlock: from,
-            toBlock: to,
-          }),
-          publicClient.getLogs({
-            address: CONTRACT_ADDRESS,
-            event: mintEvent,
-            fromBlock: from,
-            toBlock: to,
-          }),
-        ]);
-
-        for (const log of mintLogs) {
-          if ((log.args as Record<string, unknown>).landId === landId) {
-            events.push({
-              type: 'MINT',
-              from: 'GOVT',
-              // @ts-expect-error -- wagmi type inference
-              to: log.args.owner,
-              txHash: log.transactionHash,
-              blockNumber: log.blockNumber,
-            });
-          }
-        }
-        for (const log of transferLogs) {
-          if ((log.args as Record<string, unknown>).landId === landId) {
-            events.push({
-              type: 'TRANSFER',
-              // @ts-expect-error -- wagmi type inference
-              from: log.args.from,
-              // @ts-expect-error -- wagmi type inference
-              to: log.args.to,
-              txHash: log.transactionHash,
-              blockNumber: log.blockNumber,
-            });
-          }
-        }
-
-        if (to >= latest) break;
-        from = to + BigInt(1);
+      // ── 4. Status-specific supplemental data ─────────────────────────────
+      if (r.status === LandStatusV9.PENDING_VERIFICATION || r.status === LandStatusV9.LOCKED_IMPORT_DISPUTE) {
+        try {
+          const raw = (await publicClient.readContract({
+            address: CONTRACT_V9_ADDRESS,
+            abi: CONTRACT_V9_ABI,
+            functionName: 'getImportProposal',
+            args: [id],
+          })) as readonly [string, string[], number[], bigint, string, bigint, bigint, boolean];
+          const [proposer, proposedOwners, proposedShares, verificationCount, courtOrderCid, , verificationDeadline] = raw;
+          setImportProposal({ proposer, proposedOwners: [...proposedOwners], proposedShares: [...proposedShares], verificationCount, courtOrderCid, verificationDeadline });
+        } catch { /* no proposal */ }
       }
 
-      events.sort((a, b) => Number(b.blockNumber - a.blockNumber));
-      setHistory(events);
-    } catch (e) {
-      console.error('History fetch failed:', e);
-      setHistoryError(
-        'Could not load on-chain history. The RPC may be rate-limited or temporarily unavailable — try again in a moment.'
-      );
-    } finally {
-      setLoadingHistory(false);
+      if (r.status === LandStatusV9.PENDING_INHERITANCE || r.status === LandStatusV9.LOCKED_INHERITANCE_DISPUTE) {
+        try {
+          const raw = (await publicClient.readContract({
+            address: CONTRACT_V9_ADDRESS,
+            abi: CONTRACT_V9_ABI,
+            functionName: 'getInheritanceRequest',
+            args: [id],
+          })) as readonly [string, string[], number[], bigint, boolean, bigint, string, bigint, `0x${string}`, bigint];
+          const [deceasedHolder, heirs, heirShares, approvalCount, isExecuted, , courtOrderCid, , , votingDeadline] = raw;
+          setInheritanceRequest({ deceasedHolder, heirs: [...heirs], heirShares: [...heirShares], approvalCount, isExecuted, courtOrderCid, votingDeadline });
+        } catch { /* no inheritance */ }
+      }
+
+      if (r.status === LandStatusV9.PENDING_SUBDIVISION || r.status === LandStatusV9.LOCKED_SUBDIVISION_DISPUTE) {
+        try {
+          const raw = (await publicClient.readContract({
+            address: CONTRACT_V9_ADDRESS,
+            abi: CONTRACT_V9_ABI,
+            functionName: 'getSubdivisionPlan',
+            args: [id],
+          })) as readonly [string[], string[], string, string, bigint, boolean, bigint];
+          const [newLandIds, , courtOrderCid, , approvalCount, isExecuted] = raw;
+          setSubdivisionPlan({ newLandIds: [...newLandIds], courtOrderCid, approvalCount, isExecuted });
+        } catch { /* no subdivision */ }
+      }
+
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Contract error. Check the Land ID and try again.');
     }
+    setIsLoading(false);
   };
 
-  // Trigger the history fetch once the LandRecord is loaded — we need its
-  // verifiedAt timestamp to bound the log scan to a manageable block range.
-  useEffect(() => {
-    if (!queryId || !landRecord) return;
-    const record = landRecord as Record<string, unknown>;
-    if (record.currentOwner === ZERO_ADDRESS) return; // no record → no history
-    void fetchHistory(queryId, record.verifiedAt as bigint);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queryId, landRecord]);
+  const statusMeta = record !== null ? STATUS_META[record.status] : null;
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!searchId.trim()) return;
-    setQueryId(searchId.trim());
-  };
-
-  const isValidRecord = landRecord && (landRecord as Record<string, unknown>).currentOwner !== ZERO_ADDRESS;
-  const record = landRecord as Record<string, unknown> | undefined;
-
-  const shorten = (addr: string) => addr.length > 16 ? `${addr.slice(0, 8)}…${addr.slice(-6)}` : addr;
+  // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen bg-brand-dark text-white">
+    <main className="min-h-screen bg-brand-dark text-white">
       <Navbar />
 
-      <main className="mx-auto w-full max-w-5xl px-6 py-12 md:px-10">
+      <div className="max-w-3xl mx-auto p-6 space-y-8">
 
         {/* Header */}
-        <div className="text-center mb-10">
-          <div className="inline-flex items-center gap-2 bg-white/5 border border-white/10 text-gray-400 px-3 py-1 rounded-full text-[11px] font-medium mb-5">
-            <ShieldCheck size={12} className="text-indigo-400" />
-            Public On-Chain Verification
-          </div>
-          <h1 className="text-3xl md:text-4xl font-bold tracking-tight mb-3">
-            Verify Land Ownership
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <ShieldCheck size={24} className="text-indigo-400" />
+            Public Land Verification
           </h1>
-          <p className="text-gray-400 text-sm md:text-base max-w-xl mx-auto leading-relaxed">
-            Look up any registered parcel and view its complete chain of title — straight from the
-            blockchain. No login required.
+          <p className="text-white/50 text-sm mt-1">
+            Look up any land record by Land ID. No wallet required. Ownership and history are on-chain and tamper-proof.
           </p>
         </div>
 
-        {/* Search bar */}
-        <form
-          onSubmit={handleSearch}
-          className="flex flex-col sm:flex-row gap-2 max-w-xl mx-auto mb-10"
-        >
-          <div className="relative flex-1">
-            <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" />
-            <input
-              type="text"
-              placeholder="Enter Land ID (e.g. LND-001)"
-              value={searchId}
-              onChange={(e) => setSearchId(e.target.value)}
-              className="w-full bg-black/30 border border-white/10 rounded-lg pl-11 pr-4 py-3 text-white text-sm font-mono outline-none focus:border-indigo-500"
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={!searchId.trim() || isLoading}
-            className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 px-6 py-3 rounded-lg text-sm font-semibold transition-colors flex items-center justify-center gap-2"
-          >
-            {isLoading ? <Loader2 size={15} className="animate-spin" /> : <Search size={15} />}
+        {/* Search */}
+        <form onSubmit={handleSearch} className="flex gap-2">
+          <input
+            type="text"
+            value={searchId}
+            onChange={(e) => setSearchId(e.target.value)}
+            className="field flex-1"
+            placeholder="e.g. DHA-P9-042"
+          />
+          <button type="submit" disabled={isLoading || !searchId.trim()} className="btn-primary px-6 flex items-center gap-2">
+            {isLoading ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />}
             Verify
           </button>
         </form>
 
-        {/* States */}
-        {!queryId && (
-          <div className="max-w-xl mx-auto text-center text-xs text-gray-600">
-            Tip: Land IDs follow the format your government registry uses — typically a string like
-            <span className="font-mono text-gray-500"> LND-001</span>.
+        {error && (
+          <div className="flex items-start gap-3 p-4 rounded-xl border bg-red-500/10 border-red-500/20 text-red-300 text-sm">
+            <AlertCircle size={16} className="flex-shrink-0 mt-0.5" /> {error}
           </div>
         )}
 
-        {!isLoading && queryId && (isError || !isValidRecord) && (
-          <div className="max-w-xl mx-auto bg-red-500/10 border border-red-500/20 rounded-xl p-6 flex items-start gap-3">
-            <AlertCircle size={20} className="text-red-400 flex-shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm font-semibold text-red-300">Record not found</p>
-              <p className="text-xs text-red-400/80 mt-1">
-                No land record exists on-chain for ID <span className="font-mono">{queryId}</span>.
-                Check the spelling and try again.
-              </p>
-            </div>
-          </div>
-        )}
+        {record && (
+          <div className="space-y-5">
 
-        {isValidRecord && record && (
-          <div className="grid md:grid-cols-3 gap-6 text-left">
+            {/* ── Core record ──────────────────────────────────────────────── */}
+            <div className="glass-card p-6 rounded-2xl space-y-5">
 
-            {/* Current title card */}
-            <div className="md:col-span-1 surface p-6 rounded-2xl h-fit">
-              <div className="flex justify-between items-start border-b border-white/5 pb-4 mb-4">
-                <h2 className="text-lg font-semibold tracking-tight">Current Title</h2>
-                {(() => {
-                  const meta = STATUS_META[Number(record.status)] ?? STATUS_META[0];
-                  const Icon = meta.icon;
-                  return (
-                    <span className={`pill border ${meta.tone}`}>
-                      <Icon size={11} /> {meta.label}
-                    </span>
-                  );
-                })()}
+              {/* Top row: Land ID + status pill */}
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs text-white/40 mb-0.5">Land ID</p>
+                  <p className="font-mono text-xl text-white">{record.landId}</p>
+                  <p className="text-sm text-white/50 mt-0.5">{landTypeLabel(record.landType as LandTypeV9)}</p>
+                </div>
+                {statusMeta && (
+                  <span className={`pill border text-xs ${statusMeta.tone}`}>
+                    <statusMeta.Icon size={11} className="inline mr-1" />
+                    {landStatusLabel(record.status as LandStatusV9)}
+                  </span>
+                )}
               </div>
 
-              <div className="space-y-4">
-                <div>
-                  <label className="text-[11px] text-gray-500 uppercase tracking-wide">Current Owner</label>
-                  <p className="text-sm font-mono text-indigo-300 break-all mt-0.5">
-                    {record.currentOwner as string}
-                  </p>
-                </div>
-                <div>
-                  <label className="text-[11px] text-gray-500 uppercase tracking-wide">CNIC</label>
-                  <p className="text-sm font-mono text-gray-200 mt-0.5">
-                    {record.cnic as string}
-                  </p>
-                </div>
-                <div>
-                  <label className="text-[11px] text-gray-500 uppercase tracking-wide">Land ID</label>
-                  <p className="text-sm font-mono text-gray-200 mt-0.5">
-                    {record.landId as string}
-                  </p>
-                </div>
-                <div>
-                  <label className="text-[11px] text-gray-500 uppercase tracking-wide">Verified On</label>
-                  <p className="text-sm text-gray-300 mt-0.5">
-                    {new Date(Number(record.verifiedAt) * 1000).toLocaleDateString(undefined, {
-                      year: 'numeric', month: 'short', day: 'numeric',
-                    })}
-                  </p>
-                </div>
-                {record.ipfsHash ? (
-                  <a
-                    href={`https://gateway.pinata.cloud/ipfs/${record.ipfsHash as string}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-2 flex items-center justify-center gap-2 w-full py-2.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-sm font-medium text-gray-200 transition-colors"
-                  >
-                    <FileText size={14} /> View Original Deed
-                  </a>
-                ) : null}
-              </div>
-            </div>
-
-            {/* History timeline */}
-            <div className="md:col-span-2 surface p-6 rounded-2xl">
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-lg font-semibold tracking-tight">Chain of Title</h2>
-                <span className="text-[11px] text-gray-500">
-                  {history.length} event{history.length === 1 ? '' : 's'}
-                </span>
-              </div>
-
-              {loadingHistory ? (
-                <div className="flex items-center gap-2 text-sm text-gray-400">
-                  <Loader2 size={14} className="animate-spin" /> Tracing blockchain events…
-                </div>
-              ) : historyError ? (
-                <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4 flex items-start gap-2.5">
-                  <AlertCircle size={15} className="text-red-400 flex-shrink-0 mt-0.5" />
-                  <div className="flex-1">
-                    <p className="text-sm text-red-300">{historyError}</p>
-                    <button
-                      onClick={() => {
-                        const r = landRecord as Record<string, unknown> | undefined;
-                        if (r?.verifiedAt) void fetchHistory(queryId, r.verifiedAt as bigint);
-                      }}
-                      className="mt-2 text-xs text-red-300 hover:text-red-200 underline underline-offset-2"
-                    >
-                      Retry
-                    </button>
+              {/* Government verification badge */}
+              {record.verifiedAt > BigInt(0) && (
+                <div className="flex items-start gap-3 p-4 rounded-xl bg-green-500/10 border border-green-500/20">
+                  <CheckCircle2 size={18} className="text-green-400 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-green-300 font-semibold text-sm">Government Verified</p>
+                    <p className="text-green-400/70 text-xs mt-0.5">
+                      This land was verified and minted on-chain at{' '}
+                      <span className="text-green-300">{fmtDate(record.verifiedAt)}</span>
+                    </p>
                   </div>
                 </div>
-              ) : history.length === 0 ? (
-                <p className="text-sm text-gray-500">
-                  No on-chain events found for this land yet.
-                </p>
-              ) : (
-                <div className="relative border-l-2 border-white/10 ml-3">
-                  {history.map((event, i) => (
-                    <div key={event.txHash + i} className="mb-7 ml-6 relative last:mb-0">
-                      <div
-                        className={`absolute -left-[31px] top-1.5 w-3.5 h-3.5 rounded-full border-2 border-[#0a0b1e] ${
-                          event.type === 'MINT' ? 'bg-green-500' : 'bg-indigo-500'
-                        }`}
-                      />
-                      <div className="bg-white/[0.03] hover:bg-white/[0.05] p-4 rounded-lg border border-white/[0.05] transition-colors">
-                        <div className="flex flex-wrap justify-between items-center gap-2 mb-3">
-                          <span
-                            className={`pill ${
-                              event.type === 'MINT'
-                                ? 'bg-green-500/15 text-green-300'
-                                : 'bg-indigo-500/15 text-indigo-300'
-                            }`}
-                          >
-                            {event.type === 'MINT' ? 'Government Issuance' : 'Ownership Transfer'}
-                          </span>
-                          <a
-                            href={`https://sepolia.etherscan.io/tx/${event.txHash}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-[11px] text-gray-500 hover:text-indigo-300 flex items-center gap-1 font-mono"
-                          >
-                            <ExternalLink size={10} />
-                            {event.txHash.slice(0, 10)}…
-                          </a>
-                        </div>
-                        <div className="grid grid-cols-2 gap-4 text-sm">
-                          <div>
-                            <span className="block text-[11px] text-gray-500 uppercase tracking-wide">From</span>
-                            <span className="font-mono text-gray-300">{shorten(event.from)}</span>
-                          </div>
-                          <div>
-                            <span className="block text-[11px] text-gray-500 uppercase tracking-wide">To</span>
-                            <span className="font-mono text-white">{shorten(event.to)}</span>
-                          </div>
-                        </div>
+              )}
+
+              {/* Proposed but not yet verified */}
+              {record.proposedAt > BigInt(0) && record.verifiedAt === BigInt(0) && (
+                <div className="flex items-start gap-3 p-4 rounded-xl bg-yellow-500/10 border border-yellow-500/20">
+                  <Clock size={18} className="text-yellow-400 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-yellow-300 font-semibold text-sm">Pending Verification</p>
+                    <p className="text-yellow-400/70 text-xs mt-0.5">
+                      Proposed at <span className="text-yellow-300">{fmtDate(record.proposedAt)}</span>.
+                      Awaiting shareholder confirmations.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Deed document link */}
+              {record.ipfsHash && (
+                <a
+                  href={`${IPFS_GATEWAY}/${record.ipfsHash}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
+                >
+                  <FileText size={15} />
+                  View Deed Document on IPFS
+                  <ExternalLink size={12} />
+                </a>
+              )}
+            </div>
+
+            {/* ── Current Ownership ─────────────────────────────────────────── */}
+            {shareholders.length > 0 && (
+              <div className="glass-card p-6 rounded-2xl space-y-4">
+                <h2 className="font-semibold flex items-center gap-2">
+                  <Users size={16} className="text-indigo-400" />
+                  Current Ownership
+                </h2>
+                <div className="space-y-3">
+                  {shareholders.map((s) => (
+                    <div key={s.address} className="surface p-4 rounded-xl flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        {s.profile?.isRegistered ? (
+                          <>
+                            <p className="text-sm text-white font-medium">{s.profile.name}</p>
+                            <p className="text-xs text-white/40 font-mono mt-0.5">
+                              CNIC {maskCnic(s.profile.cnic)}
+                            </p>
+                          </>
+                        ) : (
+                          <p className="text-sm font-mono text-white/60">{shortAddr(s.address)}</p>
+                        )}
+                        <p className="text-xs text-white/30 font-mono mt-0.5">{shortAddr(s.address)}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-indigo-400 font-bold text-lg">{formatBps(s.bps)}</p>
+                        <p className="text-xs text-white/30">{s.bps} bps</p>
                       </div>
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
+
+            {/* ── Chain of Title ────────────────────────────────────────────── */}
+            {history.length > 0 && (
+              <div className="glass-card p-6 rounded-2xl space-y-4">
+                <h2 className="font-semibold flex items-center gap-2">
+                  <ShieldCheck size={16} className="text-indigo-400" />
+                  Chain of Title
+                  <span className="text-xs text-white/30 font-normal ml-1">— complete tamper-proof history</span>
+                </h2>
+
+                <div className="relative">
+                  {/* Vertical timeline line */}
+                  <div className="absolute left-[7px] top-2 bottom-2 w-px bg-white/10" />
+
+                  <div className="space-y-5">
+                    {history.map((h, i) => {
+                      const isMint = h.from === ZERO || h.from === '0x0000000000000000000000000000000000000000';
+                      const isFirst = i === 0;
+                      const isPaid = h.price > BigInt(0);
+
+                      return (
+                        <div key={i} className="flex gap-4">
+                          {/* Timeline dot */}
+                          <div className="relative flex-shrink-0 mt-1">
+                            <div className={`w-3.5 h-3.5 rounded-full border-2 z-10 relative ${
+                              isMint
+                                ? 'bg-green-500 border-green-400'
+                                : isPaid
+                                ? 'bg-indigo-500 border-indigo-400'
+                                : 'bg-white/20 border-white/30'
+                            }`} />
+                          </div>
+
+                          {/* Event content */}
+                          <div className="flex-1 pb-1">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div>
+                                {isMint ? (
+                                  <p className="text-sm text-white font-medium">
+                                    Govt verified &amp; minted
+                                    {isFirst && ' — Land first registered on-chain'}
+                                  </p>
+                                ) : (
+                                  <p className="text-sm text-white font-medium">
+                                    {isPaid ? 'Sold' : 'Transferred'}{' '}
+                                    <span className="text-indigo-400">{formatBps(h.shareBps)}</span>
+                                    {isPaid
+                                      ? ` for ${formatEther(h.price)} ETH`
+                                      : ' (gift / free transfer)'}
+                                  </p>
+                                )}
+
+                                {/* From → To */}
+                                {!isMint && (
+                                  <div className="flex items-center gap-1.5 mt-1 text-xs text-white/50">
+                                    <span className="font-mono">{shortAddr(h.from)}</span>
+                                    <ArrowRight size={10} />
+                                    <span className="font-mono">{shortAddr(h.to)}</span>
+                                  </div>
+                                )}
+                                {isMint && (
+                                  <div className="text-xs text-white/50 mt-1 font-mono">
+                                    → {shortAddr(h.to)}
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="text-right">
+                                <p className="text-xs text-white/40">{fmtDate(h.timestamp)}</p>
+                                {isPaid && (
+                                  <p className="text-xs text-indigo-400 font-mono mt-0.5">
+                                    {formatEther(h.price)} ETH
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Import proposal (PENDING_VERIFICATION / dispute) ──────────── */}
+            {importProposal && (
+              <div className="glass-card p-6 rounded-2xl space-y-3">
+                <h2 className="font-semibold text-yellow-400">Import Proposal</h2>
+                <div className="text-xs text-white/50 space-y-1">
+                  <p>Verifications: {String(importProposal.verificationCount)} / {importProposal.proposedOwners.length}</p>
+                  <p>Deadline: {fmtDate(importProposal.verificationDeadline)}</p>
+                </div>
+                {importProposal.courtOrderCid && (
+                  <a href={`${IPFS_GATEWAY}/${importProposal.courtOrderCid}`} target="_blank" rel="noopener noreferrer"
+                    className="flex items-center gap-1 text-xs text-indigo-400 hover:underline">
+                    <ExternalLink size={11} /> Court order
+                  </a>
+                )}
+                <div className="space-y-1.5">
+                  {importProposal.proposedOwners.map((addr, i) => (
+                    <div key={addr} className="flex justify-between text-xs font-mono text-white/60">
+                      <span>{shortAddr(addr)}</span>
+                      <span className="text-indigo-400">{formatBps(importProposal.proposedShares[i])}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Inheritance request ───────────────────────────────────────── */}
+            {inheritanceRequest && (
+              <div className="glass-card p-6 rounded-2xl space-y-3">
+                <h2 className="font-semibold text-orange-400">Inheritance Request</h2>
+                <div className="text-xs text-white/50 space-y-1">
+                  <p>Deceased: <span className="font-mono">{shortAddr(inheritanceRequest.deceasedHolder)}</span></p>
+                  <p>Approvals: {String(inheritanceRequest.approvalCount)} / {inheritanceRequest.heirs.length}</p>
+                  <p>Deadline: {fmtDate(inheritanceRequest.votingDeadline)}</p>
+                  <p>Status: <span className={inheritanceRequest.isExecuted ? 'text-green-400' : 'text-yellow-400'}>
+                    {inheritanceRequest.isExecuted ? 'Executed' : 'Pending votes'}
+                  </span></p>
+                </div>
+                {inheritanceRequest.courtOrderCid && (
+                  <a href={`${IPFS_GATEWAY}/${inheritanceRequest.courtOrderCid}`} target="_blank" rel="noopener noreferrer"
+                    className="flex items-center gap-1 text-xs text-indigo-400 hover:underline">
+                    <ExternalLink size={11} /> Court order
+                  </a>
+                )}
+                <div className="space-y-1.5">
+                  {inheritanceRequest.heirs.map((heir, i) => (
+                    <div key={heir} className="flex justify-between text-xs font-mono text-white/60">
+                      <span>{shortAddr(heir)}</span>
+                      <span className="text-indigo-400">{formatBps(inheritanceRequest.heirShares[i])}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* ── Subdivision plan ──────────────────────────────────────────── */}
+            {subdivisionPlan && (
+              <div className="glass-card p-6 rounded-2xl space-y-3">
+                <h2 className="font-semibold text-blue-400">Subdivision Plan</h2>
+                <div className="text-xs text-white/50 space-y-1">
+                  <p>Approvals: {String(subdivisionPlan.approvalCount)}</p>
+                  <p>Status: <span className={subdivisionPlan.isExecuted ? 'text-green-400' : 'text-yellow-400'}>
+                    {subdivisionPlan.isExecuted ? 'Executed' : 'Pending votes'}
+                  </span></p>
+                </div>
+                {subdivisionPlan.courtOrderCid && (
+                  <a href={`${IPFS_GATEWAY}/${subdivisionPlan.courtOrderCid}`} target="_blank" rel="noopener noreferrer"
+                    className="flex items-center gap-1 text-xs text-indigo-400 hover:underline">
+                    <ExternalLink size={11} /> Court order
+                  </a>
+                )}
+                <div>
+                  <p className="text-xs text-white/40 mb-1.5">Proposed child plots:</p>
+                  <div className="space-y-1">
+                    {subdivisionPlan.newLandIds.map((id) => (
+                      <p key={id} className="text-xs font-mono text-indigo-400">{id}</p>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
           </div>
         )}
-      </main>
-    </div>
+
+        {/* Empty state after search */}
+        {!isLoading && queriedId && !record && !error && (
+          <div className="glass-card p-10 rounded-2xl text-center text-white/40">
+            No land found for <span className="font-mono text-white/60">{queriedId}</span>
+          </div>
+        )}
+
+      </div>
+    </main>
   );
 }

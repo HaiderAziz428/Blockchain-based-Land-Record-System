@@ -2,43 +2,96 @@ import { NextResponse } from 'next/server';
 import { createWalletClient, createPublicClient, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { sepolia } from 'viem/chains';
-import { CONTRACT_ABI, CONTRACT_ADDRESS } from '@/src/utils/contract';
+import { CONTRACT_V9_ABI, CONTRACT_V9_ADDRESS } from '@/src/utils/contractV9';
 
 const RPC_URL = 'https://ethereum-sepolia.publicnode.com';
 
+/**
+ * POST /api/dispute
+ *
+ * RESOLVER resolves an inheritance or import dispute.
+ *
+ * Body: {
+ *   landId: string,
+ *   disputeType: 'inheritance' | 'import',
+ *   forceExecute: boolean,
+ *   updatedCourtOrderCid: string,
+ *   legalResolutionCid: string,
+ *   overrideReason: string
+ * }
+ */
 export async function POST(request: Request) {
   const adminPrivateKey = process.env.ADMIN_PRIVATE_KEY;
   if (!adminPrivateKey) {
-    return NextResponse.json({ error: 'Server misconfigured: missing ADMIN_PRIVATE_KEY' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Server misconfigured: missing ADMIN_PRIVATE_KEY' },
+      { status: 500 }
+    );
   }
 
   try {
     const body = await request.json();
-    const { oldLandId, forceExecute } = body as { oldLandId: string; forceExecute: boolean };
+    const {
+      landId,
+      disputeType,
+      forceExecute,
+      updatedCourtOrderCid,
+      legalResolutionCid,
+      overrideReason,
+    } = body as {
+      landId: string;
+      disputeType?: 'inheritance' | 'import';
+      forceExecute: boolean;
+      updatedCourtOrderCid: string;
+      legalResolutionCid: string;
+      overrideReason: string;
+    };
 
-    if (!oldLandId) {
-      return NextResponse.json({ error: 'Missing oldLandId' }, { status: 400 });
+    if (!landId) {
+      return NextResponse.json({ error: 'Missing landId' }, { status: 400 });
     }
 
     const account = privateKeyToAccount(adminPrivateKey as `0x${string}`);
     const walletClient = createWalletClient({ account, chain: sepolia, transport: http(RPC_URL) });
     const publicClient = createPublicClient({ chain: sepolia, transport: http(RPC_URL) });
 
-    const { request: txRequest } = await publicClient.simulateContract({
-      account,
-      address: CONTRACT_ADDRESS,
-      abi: CONTRACT_ABI,
-      functionName: 'resolveDispute',
-      args: [oldLandId, Boolean(forceExecute)],
-    });
+    let txHash: `0x${string}`;
 
-    const txHash = await walletClient.writeContract(txRequest);
-    console.log(`Dispute resolved for ${oldLandId} (forceExecute=${forceExecute}): ${txHash}`);
+    if (disputeType === 'import') {
+      // resolveLandImportDispute(landId, forceApprove, courtOrderCid)
+      console.log(`API /api/dispute: resolveLandImportDispute ${landId} force=${forceExecute}`);
+      const { request: txRequest } = await publicClient.simulateContract({
+        account,
+        address: CONTRACT_V9_ADDRESS,
+        abi: CONTRACT_V9_ABI,
+        functionName: 'resolveLandImportDispute',
+        args: [landId, Boolean(forceExecute), updatedCourtOrderCid || ''],
+      });
+      txHash = await walletClient.writeContract(txRequest);
+    } else {
+      // resolveInheritanceDispute(landId, forceExecute, updatedCourtOrderCid, legalResolutionCid, overrideReason)
+      console.log(`API /api/dispute: resolveInheritanceDispute ${landId} force=${forceExecute}`);
+      const { request: txRequest } = await publicClient.simulateContract({
+        account,
+        address: CONTRACT_V9_ADDRESS,
+        abi: CONTRACT_V9_ABI,
+        functionName: 'resolveInheritanceDispute',
+        args: [
+          landId,
+          Boolean(forceExecute),
+          updatedCourtOrderCid || '',
+          legalResolutionCid || '',
+          overrideReason || '',
+        ],
+      });
+      txHash = await walletClient.writeContract(txRequest);
+    }
 
+    console.log(`  dispute resolved tx: ${txHash}`);
     return NextResponse.json({ success: true, txHash });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Internal Server Error';
-    console.error('Dispute API Error:', message);
+    console.error('API /api/dispute error:', message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

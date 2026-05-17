@@ -1,32 +1,140 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { useAccount, useReadContract, usePublicClient, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
-import { supabase } from '@/src/lib/supabase';
+import {
+  useAccount,
+  usePublicClient,
+  useReadContract,
+  useWaitForTransactionReceipt,
+  useWriteContract,
+} from 'wagmi';
+import { formatEther } from 'viem';
 import Navbar from '@/src/components/Navbar';
 import TxToast from '@/src/components/TxToast';
-import { Loader2, MapPin, CheckCircle, Tag, XCircle, ArrowRightLeft, ShieldCheck, ShieldAlert, Info } from 'lucide-react';
-import { CONTRACT_ABI, CONTRACT_ADDRESS } from '@/src/utils/contract';
 import CreateListingModal from '@/src/components/CreateListingModal';
 import TransferModal from '@/src/components/TransferModal';
+import { supabase } from '@/src/lib/supabase';
+import {
+  AlertCircle,
+  ArrowRightLeft,
+  CheckCircle,
+  ExternalLink,
+  Gavel,
+  GitBranch,
+  Home,
+  Loader2,
+  Tag,
+  Users,
+  Wallet,
+} from 'lucide-react';
+import {
+  CONTRACT_V9_ABI,
+  CONTRACT_V9_ADDRESS,
+  LandStatusV9,
+  LandTypeV9,
+  formatBps,
+  landStatusLabel,
+  landTypeLabel,
+  occupancyCategoryLabel,
+} from '@/src/utils/contractV9';
 
-interface Plot {
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+type Tab = 'lands' | 'succession' | 'subdivision' | 'occupancy' | 'withdraw';
+
+interface GovtRecord {
   land_id: string;
   owner_cnic: string;
   location: string;
   area_sq_yards: number;
-  isMinted?: boolean;
-  landStatus?: number;       // 0=ACTIVE 1=PENDING_INHERITANCE 2=LOCKED_DISPUTE
-  isListedOnChain?: boolean; // true when landListings[land_id].isActive
+  land_type: string;
+  ipfs_hash: string | null;
 }
 
-const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
+interface LandSummary {
+  landId: string;
+  ipfsHash: string;
+  landType: number;
+  status: number;
+  shareBps: number;
+  location?: string;
+  areaSqYards?: number;
+  isOnChain: boolean;
+  govtIpfsHash?: string | null;
+  activeListing?: { price: bigint; deadline: bigint } | null;
+}
 
-const LAND_STATUS_LABEL: Record<number, string> = {
-  0: 'Active',
-  1: 'Pending Inheritance',
-  2: 'Dispute Locked',
+interface OccupancyAgreement {
+  id: bigint;
+  category: number;
+  grantor: string;
+  occupant: string;
+  startTime: bigint;
+  endTime: bigint;
+  termsCid: string;
+  descriptionCid: string;
+  isRevoked: boolean;
+}
+
+const IPFS_GATEWAY = 'https://gateway.pinata.cloud/ipfs';
+
+const STATUS_TONE: Record<number, string> = {
+  [LandStatusV9.PENDING_VERIFICATION]: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
+  [LandStatusV9.ACTIVE]:               'bg-green-500/10 text-green-400 border-green-500/20',
+  [LandStatusV9.PENDING_INHERITANCE]:  'bg-orange-500/10 text-orange-400 border-orange-500/20',
+  [LandStatusV9.PENDING_SUBDIVISION]:  'bg-blue-500/10 text-blue-400 border-blue-500/20',
+  [LandStatusV9.LOCKED_IMPORT_DISPUTE]:        'bg-red-500/10 text-red-400 border-red-500/20',
+  [LandStatusV9.LOCKED_INHERITANCE_DISPUTE]:   'bg-red-500/10 text-red-400 border-red-500/20',
+  [LandStatusV9.LOCKED_SUBDIVISION_DISPUTE]:   'bg-red-500/10 text-red-400 border-red-500/20',
+  [LandStatusV9.SUBDIVIDED]:           'bg-gray-500/10 text-gray-400 border-gray-500/20',
 };
+
+// ─── Inline registration form ─────────────────────────────────────────────────
+
+function RegisterInlineForm({ onSuccess }: { onSuccess: () => void }) {
+  const [name, setName] = useState('');
+  const [cnic, setCnic] = useState('');
+  const [err, setErr] = useState('');
+
+  const { writeContract, data: hash, isPending, error: writeError } = useWriteContract();
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
+
+  useEffect(() => { if (isSuccess) onSuccess(); }, [isSuccess]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr('');
+    if (!name.trim() || !cnic.trim()) { setErr('Name and CNIC are required.'); return; }
+    if (!/^\d{5}-\d{7}-\d$/.test(cnic)) { setErr('CNIC format: 12345-1234567-1'); return; }
+    writeContract({
+      address: CONTRACT_V9_ADDRESS,
+      abi: CONTRACT_V9_ABI,
+      functionName: 'registerUser',
+      args: [name.trim(), cnic.trim()],
+    });
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3 max-w-sm mx-auto text-left">
+      <input type="text" value={name} onChange={(e) => setName(e.target.value)}
+        className="field w-full" placeholder="Full name" required />
+      <input type="text" value={cnic} onChange={(e) => setCnic(e.target.value)}
+        className="field w-full" placeholder="CNIC (12345-1234567-1)" required />
+      {(err || writeError) && (
+        <p className="text-red-400 text-xs p-3 bg-red-500/10 rounded-lg border border-red-500/20">
+          {err || writeError?.message?.split('\n')[0]}
+        </p>
+      )}
+      <button type="submit" disabled={isPending || isConfirming}
+        className="btn-primary w-full flex items-center justify-center gap-2">
+        {(isPending || isConfirming) && <Loader2 size={14} className="animate-spin" />}
+        {isPending ? 'Confirm in wallet…' : isConfirming ? 'Registering…' : 'Register'}
+      </button>
+    </form>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
 
 export default function UserDashboard() {
   const { address } = useAccount();
@@ -35,489 +143,878 @@ export default function UserDashboard() {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
-  const [userData, setUserData] = useState<{ full_name: string; cnic: string } | null>(null);
-  const [plots, setPlots] = useState<Plot[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-
-  const [mintingPlotId, setMintingPlotId] = useState<string | null>(null);
-  const [cancelingId, setCancelingId] = useState<string | null>(null);
-  const cancelProcessedRef = useRef(false);
-
+  const [tab, setTab] = useState<Tab>('lands');
+  const [lands, setLands] = useState<LandSummary[]>([]);
+  const [isLoadingLands, setIsLoadingLands] = useState(false);
+  const [selectedLand, setSelectedLand] = useState<LandSummary | null>(null);
   const [isListingModalOpen, setListingModalOpen] = useState(false);
   const [isTransferModalOpen, setTransferModalOpen] = useState(false);
-  const [selectedLand, setSelectedLand] = useState<Plot | null>(null);
-
   const [txToast, setTxToast] = useState<{ hash: string; message: string } | null>(null);
-  const [notice, setNotice] = useState<{ tone: 'error' | 'info'; message: string } | null>(null);
+  const [notice, setNotice] = useState<{ tone: 'error' | 'info' | 'success'; message: string } | null>(null);
 
-  // Inheritance heir state
-  const [heirLandId, setHeirLandId] = useState('');
-  const [heirPlan, setHeirPlan] = useState<{ status: number; approvalCount: bigint; isExecuted: boolean } | null>(null);
-  const [isCheckingPlan, setIsCheckingPlan] = useState(false);
-  const [heirCheckError, setHeirCheckError] = useState('');
-  const approveProcessedRef = useRef(false);
-  const disputeProcessedRef = useRef(false);
-
-  const { data: userProfile, isLoading: isContractLoading } = useReadContract({
-    address: CONTRACT_ADDRESS as `0x${string}`,
-    abi: CONTRACT_ABI,
-    functionName: 'users',
+  // ── User profile ──────────────────────────────────────────────────────────
+  const { data: userProfileData, isLoading: isProfileLoading, refetch: refetchProfile } = useReadContract({
+    address: CONTRACT_V9_ADDRESS,
+    abi: CONTRACT_V9_ABI,
+    functionName: 'getUser',
     args: address ? [address] : undefined,
     query: { enabled: !!address },
   });
+  const profile = userProfileData as { name: string; cnic: string; isRegistered: boolean } | undefined;
 
-  const loadData = async () => {
-    if (!userProfile || !publicClient) return;
-    const profile = userProfile as readonly [string, string, boolean];
-    const full_name = String(profile[0] ?? '');
-    const cnic = String(profile[1] ?? '');
-    const isRegistered = Boolean(profile[2]);
+  // ── Pending proceeds ──────────────────────────────────────────────────────
+  const { data: pendingProceedsData, refetch: refetchProceeds } = useReadContract({
+    address: CONTRACT_V9_ADDRESS,
+    abi: CONTRACT_V9_ABI,
+    functionName: 'pendingProceeds',
+    args: address ? [address] : undefined,
+    query: { enabled: !!address },
+  });
+  const pendingProceeds = pendingProceedsData as bigint | undefined;
 
-    if (!isRegistered || !cnic) { setIsLoading(false); return; }
-    setUserData({ full_name, cnic });
-
-    const { data: govtData } = await supabase.from('govt_land_records').select('*').eq('owner_cnic', cnic);
-
-    if (govtData) {
-      const mergedPlots = await Promise.all(
-        govtData.map(async (plot) => {
-          let isMinted = false;
-          let landStatus = 0;
-          let isListedOnChain = false;
-          try {
-            const record = await publicClient.readContract({
-              address: CONTRACT_ADDRESS as `0x${string}`,
-              abi: CONTRACT_ABI,
-              functionName: 'getLandRecord',
-              args: [plot.land_id],
-            }) as { currentOwner: string; status: number };
-            isMinted = record.currentOwner !== ZERO_ADDRESS;
-            landStatus = Number(record.status);
-
-            if (isMinted) {
-              const listing = await publicClient.readContract({
-                address: CONTRACT_ADDRESS as `0x${string}`,
-                abi: CONTRACT_ABI,
-                functionName: 'landListings',
-                args: [plot.land_id],
-              }) as [bigint, string, boolean, bigint, string];
-              isListedOnChain = listing[2];
-            }
-          } catch { isMinted = false; }
-
-          return { ...plot, isMinted, landStatus, isListedOnChain };
-        })
-      );
-      setPlots(mergedPlots as Plot[]);
-    }
-    setIsLoading(false);
-  };
+  // ── Withdraw proceeds ─────────────────────────────────────────────────────
+  const withdrawProcessedRef = useRef(false);
+  const { writeContract: writeWithdraw, data: withdrawHash, isPending: isWithdrawPending } = useWriteContract();
+  const { isLoading: isWithdrawConfirming, isSuccess: isWithdrawSuccess } = useWaitForTransactionReceipt({ hash: withdrawHash });
 
   useEffect(() => {
-    if (mounted && userProfile && !isContractLoading) void loadData();
-  }, [mounted, userProfile, isContractLoading, publicClient, address]);
-
-  // ── Mint ──────────────────────────────────────────────────────────────────
-  const handleMintRequest = async (landId: string) => {
-    if (!address) {
-      setNotice({ tone: 'error', message: 'Wallet not connected.' });
-      return;
+    if (isWithdrawSuccess && withdrawHash && !withdrawProcessedRef.current) {
+      withdrawProcessedRef.current = true;
+      setTxToast({ hash: withdrawHash, message: 'Proceeds withdrawn!' });
+      refetchProceeds();
     }
+  }, [isWithdrawSuccess, withdrawHash]);
+
+  // ── Verify & Mint ─────────────────────────────────────────────────────────
+  const [verifyingLandId, setVerifyingLandId] = useState<string | null>(null);
+
+  const handleVerifyAndMint = async (landId: string) => {
+    if (!address) return;
+    setVerifyingLandId(landId);
     setNotice(null);
-    setMintingPlotId(landId);
     try {
-      const response = await fetch('/api/verify', {
+      const res = await fetch('/api/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userAddress: address, landId }),
       });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result?.error || 'Verification failed');
-      setTxToast({ hash: result.txHash, message: `Plot ${landId} minted successfully!` });
-      void loadData();
-    } catch (e: unknown) {
-      setNotice({ tone: 'error', message: e instanceof Error ? e.message : 'Unknown error' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Mint failed');
+      setTxToast({ hash: data.txHash, message: 'Land proposed on-chain!' });
+      setTimeout(() => { loadLands(); setVerifyingLandId(null); }, 8000);
+    } catch (e) {
+      setNotice({ tone: 'error', message: `Mint failed: ${e instanceof Error ? e.message : 'Unknown error'}` });
+      setVerifyingLandId(null);
     }
-    setMintingPlotId(null);
   };
 
-  // ── Cancel Listing ────────────────────────────────────────────────────────
-  const { writeContract: cancelWrite, data: cancelTxHash, isPending: isCancelingWallet } = useWriteContract();
-  const { isLoading: isCancelingChain, isSuccess: isCancelConfirmed } = useWaitForTransactionReceipt({ hash: cancelTxHash });
-
-  const handleCancelListing = (landId: string) => {
-    if (!confirm('Remove this listing from the blockchain?')) return;
-    cancelProcessedRef.current = false;
-    setCancelingId(landId);
-    cancelWrite({
-      address: CONTRACT_ADDRESS as `0x${string}`,
-      abi: CONTRACT_ABI,
-      functionName: 'cancelListing',
-      args: [landId],
-    });
-  };
+  // ── Confirm ownership (PENDING_VERIFICATION → ACTIVE) ────────────────────
+  const [confirmingLandId, setConfirmingLandId] = useState<string | null>(null);
+  const confirmProcessedRef = useRef(false);
+  const { writeContract: writeConfirm, data: confirmHash, isPending: isConfirmPending } = useWriteContract();
+  const { isLoading: isConfirmConfirming, isSuccess: isConfirmSuccess } = useWaitForTransactionReceipt({ hash: confirmHash });
 
   useEffect(() => {
-    if (!isCancelConfirmed || !cancelingId || cancelProcessedRef.current || !cancelTxHash) return;
-    cancelProcessedRef.current = true;
-    setTxToast({ hash: cancelTxHash, message: 'Listing cancelled on-chain.' });
-    setCancelingId(null);
-    void loadData();
-  }, [isCancelConfirmed]);
+    if (isConfirmSuccess && confirmHash && !confirmProcessedRef.current) {
+      confirmProcessedRef.current = true;
+      setTxToast({ hash: confirmHash, message: 'Ownership confirmed! Land is now ACTIVE.' });
+      setConfirmingLandId(null);
+      loadLands();
+    }
+  }, [isConfirmSuccess, confirmHash]);
 
-  // ── Inheritance Heir Actions ──────────────────────────────────────────────
-  const { writeContract: approveWrite, data: approveTxHash, isPending: isApprovePending } = useWriteContract();
-  const { isLoading: isApproveConfirming, isSuccess: isApproveSuccess } = useWaitForTransactionReceipt({ hash: approveTxHash });
+  // ── Cancel listing ────────────────────────────────────────────────────────
+  const [cancelingId, setCancelingId] = useState<string | null>(null);
+  const cancelProcessedRef = useRef(false);
+  const { writeContract: writeCancel, data: cancelHash, isPending: isCancelPending } = useWriteContract();
+  const { isLoading: isCancelConfirming, isSuccess: isCancelSuccess } = useWaitForTransactionReceipt({ hash: cancelHash });
 
-  const { writeContract: disputeWrite, data: disputeTxHash, isPending: isDisputePending } = useWriteContract();
-  const { isLoading: isDisputeConfirming, isSuccess: isDisputeSuccess } = useWaitForTransactionReceipt({ hash: disputeTxHash });
+  useEffect(() => {
+    if (isCancelSuccess && cancelHash && !cancelProcessedRef.current) {
+      cancelProcessedRef.current = true;
+      setTxToast({ hash: cancelHash, message: 'Listing cancelled.' });
+      setCancelingId(null);
+      loadLands();
+    }
+  }, [isCancelSuccess, cancelHash]);
 
-  const handleCheckPlan = async () => {
-    if (!heirLandId.trim() || !publicClient) return;
+  // ── Succession voting ─────────────────────────────────────────────────────
+  const [successionLandId, setSuccessionLandId] = useState('');
+  const [successionPlan, setSuccessionPlan] = useState<{
+    deceasedHolder: string;
+    heirs: string[];
+    heirShares: number[];
+    approvalCount: bigint;
+    isExecuted: boolean;
+    courtOrderCid: string;
+    votingDeadline: bigint;
+  } | null>(null);
+  const [isCheckingPlan, setIsCheckingPlan] = useState(false);
+  const [planError, setPlanError] = useState('');
+
+  const approveProcessedRef = useRef(false);
+  const disputeProcessedRef = useRef(false);
+
+  const { writeContract: writeApprove, data: approveHash, isPending: isApprovePending } = useWriteContract();
+  const { isSuccess: isApproveSuccess } = useWaitForTransactionReceipt({ hash: approveHash });
+
+  const { writeContract: writeDispute, data: disputeHash, isPending: isDisputePending } = useWriteContract();
+  const { isSuccess: isDisputeSuccess } = useWaitForTransactionReceipt({ hash: disputeHash });
+
+  useEffect(() => {
+    if (isApproveSuccess && approveHash && !approveProcessedRef.current) {
+      approveProcessedRef.current = true;
+      setTxToast({ hash: approveHash, message: 'Succession plan approved!' });
+    }
+  }, [isApproveSuccess, approveHash]);
+
+  useEffect(() => {
+    if (isDisputeSuccess && disputeHash && !disputeProcessedRef.current) {
+      disputeProcessedRef.current = true;
+      setTxToast({ hash: disputeHash, message: 'Succession plan disputed.' });
+    }
+  }, [isDisputeSuccess, disputeHash]);
+
+  const handleCheckSuccessionPlan = async () => {
+    if (!successionLandId.trim() || !publicClient) return;
     setIsCheckingPlan(true);
-    setHeirCheckError('');
-    setHeirPlan(null);
+    setPlanError('');
+    setSuccessionPlan(null);
     try {
-      const [record, plan] = await Promise.all([
-        publicClient.readContract({
-          address: CONTRACT_ADDRESS as `0x${string}`,
-          abi: CONTRACT_ABI,
-          functionName: 'getLandRecord',
-          args: [heirLandId.trim()],
-        }) as Promise<{ currentOwner: string; status: number }>,
-        publicClient.readContract({
-          address: CONTRACT_ADDRESS as `0x${string}`,
-          abi: CONTRACT_ABI,
-          functionName: 'inheritanceRequests',
-          args: [heirLandId.trim()],
-        }) as unknown as Promise<{ approvalCount: bigint; isExecuted: boolean }>,
-      ]);
-
-      // Land never existed: owner and status both at default zero values
-      if (record.currentOwner === ZERO_ADDRESS && Number(record.status) === 0) {
-        setHeirCheckError('No land record found for this ID. Please check and try again.');
-        setIsCheckingPlan(false);
-        return;
-      }
-      // currentOwner=0 but status=1 means the land was burned after all heirs approved (executed)
-      // Fall through so the UI correctly shows the executed state
-
-      setHeirPlan({ status: Number(record.status), approvalCount: plan.approvalCount, isExecuted: plan.isExecuted });
+      const result = await publicClient.readContract({
+        address: CONTRACT_V9_ADDRESS,
+        abi: CONTRACT_V9_ABI,
+        functionName: 'getInheritanceRequest',
+        args: [successionLandId.trim()],
+      }) as unknown as {
+        deceasedHolder: string;
+        heirs: string[];
+        heirShares: number[];
+        approvalCount: bigint;
+        isExecuted: boolean;
+        courtOrderCid: string;
+        votingDeadline: bigint;
+      };
+      setSuccessionPlan(result);
     } catch {
-      setHeirCheckError('Could not read from the blockchain. Check your network connection.');
+      setPlanError('No succession plan found or land does not exist.');
     }
     setIsCheckingPlan(false);
   };
 
-  const handleApprove = () => {
-    approveProcessedRef.current = false;
-    approveWrite({ address: CONTRACT_ADDRESS as `0x${string}`, abi: CONTRACT_ABI, functionName: 'approveSuccessionPlan', args: [heirLandId.trim()] });
+  // ── Subdivision voting ────────────────────────────────────────────────────
+  const [subdivLandId, setSubdivLandId] = useState('');
+  const [subdivPlan, setSubdivPlan] = useState<{
+    newLandIds: string[];
+    newIpfsHashes: string[];
+    courtOrderCid: string;
+    approvalCount: bigint;
+    isExecuted: boolean;
+  } | null>(null);
+  const [isCheckingSubdiv, setIsCheckingSubdiv] = useState(false);
+  const [subdivError, setSubdivError] = useState('');
+
+  const subdivApproveProcessedRef = useRef(false);
+  const subdivDisputeProcessedRef = useRef(false);
+
+  const { writeContract: writeSubdivApprove, data: subdivApproveHash, isPending: isSubdivApprovePending } = useWriteContract();
+  const { isSuccess: isSubdivApproveSuccess } = useWaitForTransactionReceipt({ hash: subdivApproveHash });
+
+  const { writeContract: writeSubdivDispute, data: subdivDisputeHash, isPending: isSubdivDisputePending } = useWriteContract();
+  const { isSuccess: isSubdivDisputeSuccess } = useWaitForTransactionReceipt({ hash: subdivDisputeHash });
+
+  useEffect(() => {
+    if (isSubdivApproveSuccess && subdivApproveHash && !subdivApproveProcessedRef.current) {
+      subdivApproveProcessedRef.current = true;
+      setTxToast({ hash: subdivApproveHash, message: 'Subdivision approved!' });
+    }
+  }, [isSubdivApproveSuccess, subdivApproveHash]);
+
+  useEffect(() => {
+    if (isSubdivDisputeSuccess && subdivDisputeHash && !subdivDisputeProcessedRef.current) {
+      subdivDisputeProcessedRef.current = true;
+      setTxToast({ hash: subdivDisputeHash, message: 'Subdivision disputed.' });
+    }
+  }, [isSubdivDisputeSuccess, subdivDisputeHash]);
+
+  const handleCheckSubdivision = async () => {
+    if (!subdivLandId.trim() || !publicClient) return;
+    setIsCheckingSubdiv(true);
+    setSubdivError('');
+    setSubdivPlan(null);
+    try {
+      const result = await publicClient.readContract({
+        address: CONTRACT_V9_ADDRESS,
+        abi: CONTRACT_V9_ABI,
+        functionName: 'getSubdivisionPlan',
+        args: [subdivLandId.trim()],
+      }) as unknown as {
+        newLandIds: string[];
+        newIpfsHashes: string[];
+        courtOrderCid: string;
+        approvalCount: bigint;
+        isExecuted: boolean;
+      };
+      setSubdivPlan(result);
+    } catch {
+      setSubdivError('No subdivision plan found or land does not exist.');
+    }
+    setIsCheckingSubdiv(false);
   };
 
-  const handleDispute = () => {
-    disputeProcessedRef.current = false;
-    disputeWrite({ address: CONTRACT_ADDRESS as `0x${string}`, abi: CONTRACT_ABI, functionName: 'disputeSuccessionPlan', args: [heirLandId.trim()] });
+  // ── Occupancy ─────────────────────────────────────────────────────────────
+  const [occLandId, setOccLandId] = useState('');
+  const [occupancyAgreements, setOccupancyAgreements] = useState<OccupancyAgreement[]>([]);
+  const [isLoadingOcc, setIsLoadingOcc] = useState(false);
+  const [occError, setOccError] = useState('');
+
+  const loadOccupancy = async (landId: string) => {
+    if (!publicClient || !landId) return;
+    setIsLoadingOcc(true);
+    setOccError('');
+    try {
+      const agreements = (await publicClient.readContract({
+        address: CONTRACT_V9_ADDRESS,
+        abi: CONTRACT_V9_ABI,
+        functionName: 'getActiveOccupancyAgreements',
+        args: [landId],
+      })) as OccupancyAgreement[];
+      setOccupancyAgreements(agreements);
+    } catch {
+      setOccError('Failed to load occupancy agreements.');
+    }
+    setIsLoadingOcc(false);
+  };
+
+  // ── Load lands (chain-first) ──────────────────────────────────────────────
+  const loadLands = async () => {
+    if (!address || !publicClient || !profile?.cnic) return;
+    setIsLoadingLands(true);
+    try {
+      // Step 1: chain first — get all lands this wallet holds shares in
+      const onChainLandIds = (await publicClient.readContract({
+        address: CONTRACT_V9_ADDRESS,
+        abi: CONTRACT_V9_ABI,
+        functionName: 'getLandsByOwner',
+        args: [address],
+      })) as string[];
+
+      const onChainSet = new Set(onChainLandIds);
+
+      // Step 2: Supabase only for unminted allotments (not yet on-chain)
+      const { data: govtRecords } = await supabase
+        .from('govt_land_records')
+        .select('*')
+        .eq('owner_cnic', profile.cnic);
+
+      const allGovtRecords: GovtRecord[] = govtRecords ?? [];
+      const unmintedRecords = allGovtRecords.filter((r) => !onChainSet.has(r.land_id));
+
+      // Step 3: resolve on-chain lands
+      const onChainSummaries = await Promise.all(
+        onChainLandIds.map(async (landId): Promise<LandSummary> => {
+          const [onChainRecord, shareBps] = await Promise.all([
+            publicClient.readContract({
+              address: CONTRACT_V9_ADDRESS,
+              abi: CONTRACT_V9_ABI,
+              functionName: 'getLandRecord',
+              args: [landId],
+            }) as Promise<{ landId: string; ipfsHash: string; landType: number; status: number }>,
+            publicClient.readContract({
+              address: CONTRACT_V9_ADDRESS,
+              abi: CONTRACT_V9_ABI,
+              functionName: 'getShareBps',
+              args: [landId, address],
+            }) as Promise<number>,
+          ]);
+
+          let activeListing: { price: bigint; deadline: bigint } | null = null;
+          if (onChainRecord.status === LandStatusV9.ACTIVE) {
+            try {
+              const listing = (await publicClient.readContract({
+                address: CONTRACT_V9_ADDRESS,
+                abi: CONTRACT_V9_ABI,
+                functionName: 'getListing',
+                args: [landId, address],
+              })) as { isActive: boolean; price: bigint; deadline: bigint };
+              if (listing.isActive) activeListing = { price: listing.price, deadline: listing.deadline };
+            } catch { /* no listing */ }
+          }
+
+          const gr = allGovtRecords.find((r) => r.land_id === landId);
+          return {
+            landId,
+            ipfsHash: onChainRecord.ipfsHash,
+            landType: onChainRecord.landType,
+            status: onChainRecord.status,
+            shareBps: Number(shareBps),
+            location: gr?.location,
+            areaSqYards: gr?.area_sq_yards,
+            isOnChain: true,
+            govtIpfsHash: gr?.ipfs_hash ?? null,
+            activeListing,
+          };
+        })
+      );
+
+      // Step 4: unminted allotments from Supabase
+      const unmintedSummaries: LandSummary[] = unmintedRecords.map((gr) => ({
+        landId: gr.land_id,
+        ipfsHash: gr.ipfs_hash ?? '',
+        landType: 0,
+        status: -1,
+        shareBps: 0,
+        location: gr.location,
+        areaSqYards: gr.area_sq_yards,
+        isOnChain: false,
+        govtIpfsHash: gr.ipfs_hash,
+      }));
+
+      setLands([...onChainSummaries, ...unmintedSummaries]);
+    } catch (e) {
+      console.error('loadLands error:', e);
+      setNotice({ tone: 'error', message: 'Failed to load your lands. Check your connection.' });
+    }
+    setIsLoadingLands(false);
   };
 
   useEffect(() => {
-    if (isApproveSuccess && !approveProcessedRef.current && approveTxHash) {
-      approveProcessedRef.current = true;
-      setTxToast({ hash: approveTxHash, message: 'Approval submitted on-chain.' });
-      void handleCheckPlan();
-    }
-  }, [isApproveSuccess]);
+    if (mounted && profile?.isRegistered && profile?.cnic) loadLands();
+  }, [mounted, profile?.isRegistered, profile?.cnic, address]);
 
-  useEffect(() => {
-    if (isDisputeSuccess && !disputeProcessedRef.current && disputeTxHash) {
-      disputeProcessedRef.current = true;
-      setTxToast({ hash: disputeTxHash, message: 'Dispute registered. Land is now locked.' });
-      void handleCheckPlan();
-    }
-  }, [isDisputeSuccess]);
+  // ─── Tab button helper ────────────────────────────────────────────────────
+  const tabBtn = (t: Tab, label: string, Icon: React.ElementType) => (
+    <button
+      onClick={() => setTab(t)}
+      className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+        tab === t
+          ? 'bg-indigo-600 text-white'
+          : 'bg-white/[0.04] text-white/50 hover:text-white hover:bg-white/[0.08]'
+      }`}
+    >
+      <Icon size={14} /> {label}
+    </button>
+  );
 
+  // ─── Render ───────────────────────────────────────────────────────────────
   if (!mounted) return null;
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-brand-dark">
-        <Loader2 className="animate-spin text-brand-primary" size={48} />
-      </div>
-    );
-  }
-
   return (
-    <div className="min-h-screen bg-brand-dark text-white">
+    <main className="min-h-screen bg-brand-dark text-white">
       <Navbar />
-      <main className="p-6 md:p-12 max-w-7xl mx-auto">
-
-        {/* Thin status strip — real info, no marketing greeting */}
-        <header className="mb-8 flex flex-wrap items-end justify-between gap-3 pb-4 border-b border-white/[0.06]">
-          <div>
-            <h1 className="text-lg font-semibold tracking-tight">{userData?.full_name}</h1>
-            <p className="text-[11px] text-gray-500 font-mono mt-0.5">
-              CNIC {userData?.cnic} · {address?.slice(0, 6)}…{address?.slice(-4)}
-            </p>
-          </div>
-          <div className="flex items-center gap-5 text-[11px] text-gray-400">
-            <span><span className="text-white font-medium">{plots.filter(p => p.isMinted).length}</span>/{plots.length} on-chain</span>
-            <span><span className="text-white font-medium">{plots.filter(p => p.isListedOnChain).length}</span> listed</span>
-            <span><span className="text-white font-medium">{plots.filter(p => p.landStatus === 1 || p.landStatus === 2).length}</span> locked</span>
-          </div>
-        </header>
-
-        {notice && (
-          <div className={`mb-6 px-4 py-3 rounded-lg border text-sm flex items-start justify-between gap-3 ${
-            notice.tone === 'error'
-              ? 'bg-red-500/10 border-red-500/20 text-red-200'
-              : 'bg-indigo-500/10 border-indigo-500/20 text-indigo-200'
-          }`}>
-            <span>{notice.message}</span>
-            <button onClick={() => setNotice(null)} className="opacity-60 hover:opacity-100 text-lg leading-none" aria-label="Dismiss">×</button>
-          </div>
-        )}
-
-        <h2 className="text-base font-semibold mb-4 tracking-tight text-gray-300">Property portfolio</h2>
-        {plots.length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {plots.map((plot) => (
-              <div
-                key={plot.land_id}
-                className={`p-6 rounded-xl flex flex-col justify-between transition-colors overflow-hidden bg-white/[0.02] ${
-                  plot.isMinted ? 'border border-white/[0.12] hover:bg-white/[0.04]' : 'border border-white/[0.06]'
-                }`}
-              >
-                <div>
-                  <div className="flex justify-between items-start mb-4">
-                    <span className="bg-white/5 border border-white/10 text-gray-400 text-[10px] px-2.5 py-1 rounded-md font-mono tracking-wider">
-                      {plot.land_id}
-                    </span>
-                    {plot.isMinted ? (
-                      <span className="text-[10px] text-gray-400 px-2.5 py-1 flex items-center gap-1.5">
-                        <div className="w-1.5 h-1.5 bg-green-500 rounded-full" /> On-Chain
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-gray-500 px-2.5 py-1">Offline Record</span>
-                    )}
-                  </div>
-
-                  <h3 className="text-lg font-medium mb-1.5">{plot.location}</h3>
-                  <p className="text-gray-500 text-sm mb-4 flex items-center gap-2">
-                    <MapPin size={14} className="text-gray-400" strokeWidth={1.5} />
-                    {plot.area_sq_yards} Sq Yards
-                  </p>
-
-                  {plot.isMinted && plot.landStatus !== undefined && plot.landStatus > 0 && (
-                    <div className={`text-[10px] px-2.5 py-1.5 rounded-md mb-4 flex items-center gap-1.5 ${
-                      plot.landStatus === 1
-                        ? 'bg-yellow-500/10 border border-yellow-500/20 text-yellow-400'
-                        : 'bg-red-500/10 border border-red-500/20 text-red-400'
-                    }`}>
-                      <ShieldAlert size={11} />
-                      {LAND_STATUS_LABEL[plot.landStatus]}
-                    </div>
-                  )}
-                </div>
-
-                {plot.isMinted ? (
-                  <div className="space-y-2.5">
-                    {plot.landStatus === 0 && (
-                      <>
-                        {!plot.isListedOnChain ? (
-                          <div className="space-y-2">
-                            <button
-                              onClick={() => { setSelectedLand(plot); setListingModalOpen(true); }}
-                              className="w-full bg-white hover:bg-gray-100 text-black py-2.5 rounded-lg text-sm font-medium transition-colors flex justify-center items-center gap-2"
-                            >
-                              <Tag size={14} strokeWidth={1.5} /> Sell via Marketplace
-                            </button>
-                            <button
-                              onClick={() => { setSelectedLand(plot); setTransferModalOpen(true); }}
-                              className="w-full bg-transparent border border-white/10 hover:bg-white/5 text-gray-300 py-2.5 rounded-lg text-sm font-medium transition-colors flex justify-center items-center gap-2"
-                            >
-                              <ArrowRightLeft size={14} strokeWidth={1.5} /> Direct Transfer
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="space-y-2 border border-white/[0.08] bg-white/[0.02] p-3 rounded-xl">
-                            <div className="text-center text-[11px] text-gray-300 mb-2">Active on Marketplace</div>
-                            <button
-                              onClick={() => handleCancelListing(plot.land_id)}
-                              disabled={!!cancelingId}
-                              className="w-full bg-transparent hover:bg-white/5 text-gray-400 border border-white/10 py-2 rounded-lg text-xs font-medium transition-colors disabled:opacity-50 flex justify-center items-center gap-1.5"
-                            >
-                              {cancelingId === plot.land_id && (isCancelingWallet || isCancelingChain)
-                                ? <Loader2 className="animate-spin" size={12} />
-                                : <XCircle size={12} strokeWidth={1.5} />
-                              }
-                              Cancel Listing
-                            </button>
-                          </div>
-                        )}
-                      </>
-                    )}
-
-                    {(plot.landStatus === 1 || plot.landStatus === 2) && (
-                      <div className="text-center text-[11px] text-gray-500 py-2">
-                        This plot is locked. No transactions allowed until resolved.
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => handleMintRequest(plot.land_id)}
-                    disabled={!!mintingPlotId}
-                    className="w-full bg-white hover:bg-gray-100 text-black py-2.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-                  >
-                    {mintingPlotId === plot.land_id ? (
-                      <><Loader2 className="animate-spin" size={16} /> Minting…</>
-                    ) : (
-                      <><CheckCircle size={14} strokeWidth={1.5} /> Verify & Mint NFT</>
-                    )}
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="p-10 rounded-xl border border-white/[0.06] bg-white/[0.02] text-center">
-            <p className="text-sm text-gray-300 font-medium mb-1">No properties yet</p>
-            <p className="text-xs text-gray-500 max-w-md mx-auto leading-relaxed">
-              No land records are linked to your CNIC in the government database. If you believe this
-              is incorrect, contact the local revenue office or ensure your CNIC matches the one on
-              file with the government.
-            </p>
-          </div>
-        )}
-
-        {/* ── Succession Plans ──────────────────────────────────────────── */}
-        <div className="mt-12">
-          <div className="flex items-baseline justify-between mb-3">
-            <h2 className="text-base font-semibold tracking-tight text-gray-300">Succession plans</h2>
-            <span className="text-[11px] text-gray-600">heir voting</span>
-          </div>
-          <p className="text-gray-500 text-xs mb-4">
-            If you&apos;re listed as an heir, enter the <span className="text-gray-400">original (deceased owner&apos;s) land ID</span> below to approve or dispute.
-          </p>
-
-          <div className="p-6 rounded-xl border border-white/[0.08] bg-white/[0.02] max-w-xl">
-            <div className="flex gap-3">
-              <input
-                type="text"
-                value={heirLandId}
-                onChange={(e) => { setHeirLandId(e.target.value); setHeirPlan(null); setHeirCheckError(''); }}
-                placeholder="Old Land ID (e.g. LND-001)"
-                className="flex-1 bg-black/30 border border-white/10 px-4 py-2.5 rounded-lg text-white text-sm font-mono outline-none focus:border-indigo-500"
-              />
-              <button
-                onClick={handleCheckPlan}
-                disabled={isCheckingPlan || !heirLandId.trim()}
-                className="bg-indigo-600 hover:bg-indigo-500 px-4 py-2.5 rounded-lg text-sm font-medium disabled:opacity-50 flex items-center gap-2"
-              >
-                {isCheckingPlan ? <Loader2 size={14} className="animate-spin" /> : null}
-                Check
-              </button>
-            </div>
-
-            {heirCheckError && <p className="mt-3 text-red-400 text-xs">{heirCheckError}</p>}
-
-            {heirPlan && (
-              <div className="mt-4 space-y-3">
-
-                {heirPlan.status === 0 && (
-                  <div className="flex items-start gap-2.5 p-3 rounded-lg bg-white/[0.03] border border-white/[0.06]">
-                    <Info size={14} className="text-gray-400 flex-shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-sm text-gray-300 font-medium">No succession plan found for this land</p>
-                      <p className="text-xs text-gray-500 mt-0.5">
-                        The land with this ID is currently <span className="text-gray-400 font-medium">Active</span> — no inheritance has been initiated yet. Make sure you are entering the <span className="text-gray-400">old (deceased owner&apos;s) Land ID</span>, not your own.
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                {heirPlan.status === 1 && (
-                  <>
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-gray-400">Status:</span>
-                      <span className={`font-medium ${heirPlan.isExecuted ? 'text-green-400' : 'text-yellow-400'}`}>
-                        {heirPlan.isExecuted ? 'Executed — Completed' : 'Pending Heir Votes'}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="text-gray-400">Heir approvals:</span>
-                      <span className="font-mono text-white">{String(heirPlan.approvalCount)}</span>
-                    </div>
-
-                    {heirPlan.isExecuted ? (
-                      <div className="flex items-start gap-2.5 p-3 rounded-lg bg-green-500/10 border border-green-500/20">
-                        <CheckCircle size={14} className="text-green-400 flex-shrink-0 mt-0.5" />
-                        <div>
-                          <p className="text-sm text-green-300 font-medium">Succession plan fully executed</p>
-                          <p className="text-xs text-green-400/70 mt-0.5">
-                            All heirs approved. The original NFT was burned and new land deeds minted to each heir&apos;s wallet. Check your Property Portfolio above.
-                          </p>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex gap-3 pt-1">
-                        <button onClick={handleApprove} disabled={isApprovePending || isApproveConfirming}
-                          className="flex-1 bg-green-600 hover:bg-green-500 py-2.5 rounded-lg text-sm font-medium disabled:opacity-50 flex justify-center items-center gap-2">
-                          {(isApprovePending || isApproveConfirming) && <Loader2 size={14} className="animate-spin" />}
-                          <ShieldCheck size={14} /> Approve Plan
-                        </button>
-                        <button onClick={handleDispute} disabled={isDisputePending || isDisputeConfirming}
-                          className="flex-1 bg-red-700 hover:bg-red-600 py-2.5 rounded-lg text-sm font-medium disabled:opacity-50 flex justify-center items-center gap-2">
-                          {(isDisputePending || isDisputeConfirming) && <Loader2 size={14} className="animate-spin" />}
-                          <ShieldAlert size={14} /> Dispute
-                        </button>
-                      </div>
-                    )}
-                  </>
-                )}
-
-                {heirPlan.status === 2 && (
-                  <div className="flex items-start gap-2.5 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
-                    <ShieldAlert size={14} className="text-red-400 flex-shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-sm text-red-300 font-medium">Dispute Locked</p>
-                      <p className="text-xs text-red-400/70 mt-0.5">
-                        An heir disputed this plan. The land is locked — no transfers allowed. Awaiting admin resolution via the Government Portal.
-                      </p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Modals */}
-        {selectedLand && (
-          <CreateListingModal
-            isOpen={isListingModalOpen}
-            onClose={() => setListingModalOpen(false)}
-            land={selectedLand}
-            sellerAddress={address as string}
-            onSuccess={(txHash) => {
-              setTxToast({ hash: txHash, message: `${selectedLand.land_id} is now listed on the marketplace!` });
-              void loadData();
-            }}
-          />
-        )}
-        {selectedLand && (
-          <TransferModal
-            isOpen={isTransferModalOpen}
-            onClose={() => setTransferModalOpen(false)}
-            landId={selectedLand.land_id}
-            location={selectedLand.location}
-            onSuccess={(txHash) => { setTxToast({ hash: txHash, message: 'Ownership transferred on-chain!' }); void loadData(); }}
-          />
-        )}
-      </main>
 
       {txToast && (
         <TxToast txHash={txToast.hash} message={txToast.message} onDismiss={() => setTxToast(null)} />
       )}
-    </div>
+
+      <div className="max-w-5xl mx-auto p-6 space-y-6">
+
+        {/* ── Header ──────────────────────────────────────────────────────── */}
+        <div>
+          <h1 className="text-2xl font-bold">User Portal</h1>
+          {profile?.isRegistered && (
+            <p className="text-white/40 text-sm mt-1 font-mono">
+              {profile.name} · CNIC {profile.cnic}
+            </p>
+          )}
+        </div>
+
+        {/* ── Not connected ────────────────────────────────────────────────── */}
+        {!address && (
+          <div className="glass-card p-8 rounded-2xl text-center text-white/40">
+            Connect your wallet to access the User Portal.
+          </div>
+        )}
+
+        {/* ── Connected but not registered ─────────────────────────────────── */}
+        {address && !isProfileLoading && !profile?.isRegistered && (
+          <div className="glass-card p-8 rounded-2xl text-center space-y-4">
+            <p className="text-white/60 text-sm">Register your wallet to get started.</p>
+            <RegisterInlineForm onSuccess={() => refetchProfile()} />
+          </div>
+        )}
+
+        {/* ── Registered user content ───────────────────────────────────────── */}
+        {address && profile?.isRegistered && (
+          <>
+            {notice && (
+              <div className={`flex items-start gap-3 p-4 rounded-xl border text-sm ${
+                notice.tone === 'error'   ? 'bg-red-500/10 border-red-500/20 text-red-300'
+                : notice.tone === 'success' ? 'bg-green-500/10 border-green-500/20 text-green-300'
+                : 'bg-blue-500/10 border-blue-500/20 text-blue-300'
+              }`}>
+                <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
+                <span>{notice.message}</span>
+                <button onClick={() => setNotice(null)} className="ml-auto text-white/40 hover:text-white">×</button>
+              </div>
+            )}
+
+            {/* Tab bar */}
+            <div className="flex flex-wrap gap-2">
+              {tabBtn('lands', 'My Lands', Home)}
+              {tabBtn('succession', 'Succession Voting', Gavel)}
+              {tabBtn('subdivision', 'Subdivision Voting', GitBranch)}
+              {tabBtn('occupancy', 'Occupancy', Users)}
+              {tabBtn('withdraw', 'Withdraw', Wallet)}
+            </div>
+
+            {/* ── Tab: My Lands ─────────────────────────────────────────────── */}
+            {tab === 'lands' && (
+              <section className="space-y-4">
+                {isLoadingLands ? (
+                  <div className="flex items-center gap-2 text-white/40">
+                    <Loader2 size={18} className="animate-spin" /> Loading your lands…
+                  </div>
+                ) : lands.length === 0 ? (
+                  <div className="surface p-8 rounded-2xl text-center text-white/40">
+                    No land records found for your CNIC in the govt registry.
+                  </div>
+                ) : (
+                  lands.map((land) => (
+                    <div key={land.landId} className="surface p-5 rounded-2xl space-y-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="font-mono text-sm text-indigo-400">{land.landId}</p>
+                          <p className="text-xs text-white/40 mt-0.5">
+                            {land.isOnChain ? landTypeLabel(land.landType as LandTypeV9) : (land.location ?? 'Not on-chain yet')}
+                          </p>
+                          {land.areaSqYards && (
+                            <p className="text-xs text-white/30">{land.areaSqYards} sq yards</p>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-2 items-center">
+                          {land.isOnChain ? (
+                            <>
+                              <span className={`pill border text-xs ${STATUS_TONE[land.status] ?? 'bg-gray-500/10 text-gray-400 border-gray-500/20'}`}>
+                                {landStatusLabel(land.status as LandStatusV9)}
+                              </span>
+                              {land.shareBps > 0 && (
+                                <span className="pill border text-xs bg-indigo-500/10 text-indigo-400 border-indigo-500/20">
+                                  {formatBps(land.shareBps)} ({land.shareBps} bps)
+                                </span>
+                              )}
+                              {land.activeListing && (
+                                <span className="pill border text-xs bg-purple-500/10 text-purple-400 border-purple-500/20">
+                                  Listed · {formatEther(land.activeListing.price)} ETH
+                                </span>
+                              )}
+                            </>
+                          ) : (
+                            <span className="pill border text-xs bg-yellow-500/10 text-yellow-400 border-yellow-500/20">
+                              Not On-Chain
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {land.isOnChain && land.ipfsHash && (
+                        <a href={`${IPFS_GATEWAY}/${land.ipfsHash}`} target="_blank" rel="noopener noreferrer"
+                          className="flex items-center gap-1 text-xs text-white/40 hover:text-indigo-400">
+                          <ExternalLink size={11} /> IPFS metadata
+                        </a>
+                      )}
+
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        {/* Not on-chain: Verify & Mint */}
+                        {!land.isOnChain && (
+                          <button
+                            disabled={verifyingLandId === land.landId}
+                            onClick={() => handleVerifyAndMint(land.landId)}
+                            className="btn-primary text-xs py-1.5 px-3 flex items-center gap-1"
+                          >
+                            {verifyingLandId === land.landId
+                              ? <><Loader2 size={12} className="animate-spin" /> Minting…</>
+                              : <><CheckCircle size={12} /> Verify & Mint</>}
+                          </button>
+                        )}
+
+                        {/* PENDING_VERIFICATION: confirm ownership */}
+                        {land.isOnChain && land.status === LandStatusV9.PENDING_VERIFICATION && (
+                          <button
+                            disabled={isConfirmPending || isConfirmConfirming}
+                            onClick={() => {
+                              confirmProcessedRef.current = false;
+                              setConfirmingLandId(land.landId);
+                              writeConfirm({
+                                address: CONTRACT_V9_ADDRESS,
+                                abi: CONTRACT_V9_ABI,
+                                functionName: 'verifyLandImport',
+                                args: [land.landId],
+                              });
+                            }}
+                            className="btn-primary text-xs py-1.5 px-3 flex items-center gap-1"
+                          >
+                            {confirmingLandId === land.landId && (isConfirmPending || isConfirmConfirming)
+                              ? <><Loader2 size={12} className="animate-spin" /> Confirming…</>
+                              : <><CheckCircle size={12} /> Confirm Ownership</>}
+                          </button>
+                        )}
+
+                        {/* ACTIVE: list / cancel / transfer / occupancy */}
+                        {land.isOnChain && land.status === LandStatusV9.ACTIVE && (
+                          <>
+                            {land.activeListing ? (
+                              <button
+                                disabled={cancelingId === land.landId && (isCancelPending || isCancelConfirming)}
+                                onClick={() => {
+                                  cancelProcessedRef.current = false;
+                                  setCancelingId(land.landId);
+                                  writeCancel({
+                                    address: CONTRACT_V9_ADDRESS,
+                                    abi: CONTRACT_V9_ABI,
+                                    functionName: 'cancelListing',
+                                    args: [land.landId],
+                                  });
+                                }}
+                                className="btn-ghost text-xs py-1.5 px-3 flex items-center gap-1 text-red-400 hover:text-red-300"
+                              >
+                                {cancelingId === land.landId && (isCancelPending || isCancelConfirming)
+                                  ? <Loader2 size={12} className="animate-spin" />
+                                  : <Tag size={12} />}
+                                Cancel Listing
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => { setSelectedLand(land); setListingModalOpen(true); }}
+                                className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1"
+                              >
+                                <Tag size={12} /> List for Sale
+                              </button>
+                            )}
+                            <button
+                              onClick={() => { setSelectedLand(land); setTransferModalOpen(true); }}
+                              className="btn-ghost text-xs py-1.5 px-3 flex items-center gap-1"
+                            >
+                              <ArrowRightLeft size={12} /> Transfer Share
+                            </button>
+                            <button
+                              onClick={() => { setOccLandId(land.landId); setTab('occupancy'); loadOccupancy(land.landId); }}
+                              className="btn-ghost text-xs py-1.5 px-3 flex items-center gap-1"
+                            >
+                              <Users size={12} /> Occupancy
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </section>
+            )}
+
+            {/* ── Tab: Succession Voting ────────────────────────────────────── */}
+            {tab === 'succession' && (
+              <section className="space-y-5">
+                <div className="glass-card p-5 rounded-2xl space-y-4">
+                  <h2 className="font-semibold text-white">Check Succession Plan</h2>
+                  <p className="text-xs text-white/40">
+                    Enter the <span className="text-white/60">deceased owner&apos;s land ID</span> to view and vote on the succession plan.
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={successionLandId}
+                      onChange={(e) => setSuccessionLandId(e.target.value)}
+                      className="field flex-1"
+                      placeholder="Land ID (e.g. DHA-P9-042)"
+                    />
+                    <button
+                      onClick={handleCheckSuccessionPlan}
+                      disabled={isCheckingPlan || !successionLandId}
+                      className="btn-primary px-4"
+                    >
+                      {isCheckingPlan ? <Loader2 size={16} className="animate-spin" /> : 'Check'}
+                    </button>
+                  </div>
+
+                  {planError && (
+                    <p className="text-red-400 text-xs p-3 bg-red-500/10 rounded-lg border border-red-500/20">{planError}</p>
+                  )}
+
+                  {successionPlan && (
+                    <div className="space-y-3 pt-2">
+                      <div className="surface p-4 rounded-xl space-y-2 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-white/40">Status</span>
+                          <span className={successionPlan.isExecuted ? 'text-green-400' : 'text-yellow-400'}>
+                            {successionPlan.isExecuted ? 'Executed' : 'Pending Votes'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-white/40">Approvals</span>
+                          <span className="font-mono">{String(successionPlan.approvalCount)} / {successionPlan.heirs.length}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-white/40">Heirs</span>
+                          <span className="font-mono">{successionPlan.heirs.length}</span>
+                        </div>
+                        {successionPlan.votingDeadline > BigInt(0) && (
+                          <div className="flex justify-between">
+                            <span className="text-white/40">Deadline</span>
+                            <span className="text-xs">{new Date(Number(successionPlan.votingDeadline) * 1000).toLocaleDateString()}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {!successionPlan.isExecuted && (
+                        <div className="flex gap-3">
+                          <button
+                            onClick={() => {
+                              approveProcessedRef.current = false;
+                              writeApprove({
+                                address: CONTRACT_V9_ADDRESS,
+                                abi: CONTRACT_V9_ABI,
+                                functionName: 'approveSuccessionPlan',
+                                args: [successionLandId.trim()],
+                              });
+                            }}
+                            disabled={isApprovePending}
+                            className="btn-primary flex-1 flex items-center justify-center gap-2"
+                          >
+                            {isApprovePending && <Loader2 size={14} className="animate-spin" />}
+                            Approve
+                          </button>
+                          <button
+                            onClick={() => {
+                              disputeProcessedRef.current = false;
+                              writeDispute({
+                                address: CONTRACT_V9_ADDRESS,
+                                abi: CONTRACT_V9_ABI,
+                                functionName: 'disputeSuccessionPlan',
+                                args: [successionLandId.trim()],
+                              });
+                            }}
+                            disabled={isDisputePending}
+                            className="btn-ghost flex-1 flex items-center justify-center gap-2 text-red-400 hover:text-red-300"
+                          >
+                            {isDisputePending && <Loader2 size={14} className="animate-spin" />}
+                            Dispute
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
+
+            {/* ── Tab: Subdivision Voting ───────────────────────────────────── */}
+            {tab === 'subdivision' && (
+              <section className="space-y-5">
+                <div className="glass-card p-5 rounded-2xl space-y-4">
+                  <h2 className="font-semibold text-white">Check Subdivision Plan</h2>
+                  <p className="text-xs text-white/40">
+                    Enter a land ID to view and vote on a pending subdivision.
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={subdivLandId}
+                      onChange={(e) => setSubdivLandId(e.target.value)}
+                      className="field flex-1"
+                      placeholder="Land ID (e.g. DHA-P9-042)"
+                    />
+                    <button
+                      onClick={handleCheckSubdivision}
+                      disabled={isCheckingSubdiv || !subdivLandId}
+                      className="btn-primary px-4"
+                    >
+                      {isCheckingSubdiv ? <Loader2 size={16} className="animate-spin" /> : 'Check'}
+                    </button>
+                  </div>
+
+                  {subdivError && (
+                    <p className="text-red-400 text-xs p-3 bg-red-500/10 rounded-lg border border-red-500/20">{subdivError}</p>
+                  )}
+
+                  {subdivPlan && (
+                    <div className="space-y-3 pt-2">
+                      <div className="surface p-4 rounded-xl space-y-2 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-white/40">Status</span>
+                          <span className={subdivPlan.isExecuted ? 'text-green-400' : 'text-yellow-400'}>
+                            {subdivPlan.isExecuted ? 'Executed' : 'Pending Votes'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-white/40">Approvals</span>
+                          <span className="font-mono">{String(subdivPlan.approvalCount)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-white/40">New plots</span>
+                          <span className="font-mono">{subdivPlan.newLandIds.length}</span>
+                        </div>
+                        {subdivPlan.newLandIds.length > 0 && (
+                          <div className="pt-1 space-y-1">
+                            {subdivPlan.newLandIds.map((id) => (
+                              <p key={id} className="font-mono text-xs text-indigo-400">{id}</p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {!subdivPlan.isExecuted && (
+                        <div className="flex gap-3">
+                          <button
+                            onClick={() => {
+                              subdivApproveProcessedRef.current = false;
+                              writeSubdivApprove({
+                                address: CONTRACT_V9_ADDRESS,
+                                abi: CONTRACT_V9_ABI,
+                                functionName: 'approveSubdivision',
+                                args: [subdivLandId.trim()],
+                              });
+                            }}
+                            disabled={isSubdivApprovePending}
+                            className="btn-primary flex-1 flex items-center justify-center gap-2"
+                          >
+                            {isSubdivApprovePending && <Loader2 size={14} className="animate-spin" />}
+                            Approve
+                          </button>
+                          <button
+                            onClick={() => {
+                              subdivDisputeProcessedRef.current = false;
+                              writeSubdivDispute({
+                                address: CONTRACT_V9_ADDRESS,
+                                abi: CONTRACT_V9_ABI,
+                                functionName: 'disputeSubdivision',
+                                args: [subdivLandId.trim()],
+                              });
+                            }}
+                            disabled={isSubdivDisputePending}
+                            className="btn-ghost flex-1 flex items-center justify-center gap-2 text-red-400 hover:text-red-300"
+                          >
+                            {isSubdivDisputePending && <Loader2 size={14} className="animate-spin" />}
+                            Dispute
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
+
+            {/* ── Tab: Occupancy ────────────────────────────────────────────── */}
+            {tab === 'occupancy' && (
+              <section className="space-y-5">
+                <div className="glass-card p-5 rounded-2xl space-y-4">
+                  <h2 className="font-semibold text-white">Occupancy Agreements</h2>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={occLandId}
+                      onChange={(e) => setOccLandId(e.target.value)}
+                      className="field flex-1"
+                      placeholder="Land ID"
+                    />
+                    <button
+                      onClick={() => loadOccupancy(occLandId)}
+                      disabled={isLoadingOcc || !occLandId}
+                      className="btn-primary px-4"
+                    >
+                      {isLoadingOcc ? <Loader2 size={16} className="animate-spin" /> : 'Load'}
+                    </button>
+                  </div>
+
+                  {occError && (
+                    <p className="text-red-400 text-xs p-3 bg-red-500/10 rounded-lg border border-red-500/20">{occError}</p>
+                  )}
+
+                  {occupancyAgreements.length > 0 ? (
+                    <div className="space-y-3">
+                      {occupancyAgreements.map((a, i) => (
+                        <div key={i} className="surface p-4 rounded-xl text-sm space-y-2">
+                          <div className="flex justify-between">
+                            <span className="text-white/40">Category</span>
+                            <span>{occupancyCategoryLabel(a.category as never)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-white/40">Occupant</span>
+                            <span className="font-mono text-xs">{a.occupant.slice(0, 8)}…{a.occupant.slice(-6)}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-white/40">Expires</span>
+                            <span className="text-xs">{new Date(Number(a.endTime) * 1000).toLocaleDateString()}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : occLandId && !isLoadingOcc && !occError ? (
+                    <p className="text-white/40 text-sm text-center py-4">No active occupancy agreements.</p>
+                  ) : null}
+                </div>
+              </section>
+            )}
+
+            {/* ── Tab: Withdraw ─────────────────────────────────────────────── */}
+            {tab === 'withdraw' && (
+              <section>
+                <div className="glass-card p-6 rounded-2xl space-y-4 max-w-md">
+                  <h2 className="font-semibold text-white">Pending Sale Proceeds</h2>
+                  <p className="text-3xl font-bold text-indigo-400">
+                    {pendingProceeds !== undefined
+                      ? `${formatEther(pendingProceeds)} ETH`
+                      : '—'}
+                  </p>
+                  <p className="text-xs text-white/40">
+                    ETH from marketplace sales is held in the contract until you withdraw.
+                  </p>
+                  <button
+                    disabled={!pendingProceeds || pendingProceeds === BigInt(0) || isWithdrawPending || isWithdrawConfirming}
+                    onClick={() => {
+                      withdrawProcessedRef.current = false;
+                      writeWithdraw({
+                        address: CONTRACT_V9_ADDRESS,
+                        abi: CONTRACT_V9_ABI,
+                        functionName: 'withdrawProceeds',
+                        args: [],
+                      });
+                    }}
+                    className="btn-primary w-full flex items-center justify-center gap-2 disabled:opacity-40"
+                  >
+                    {(isWithdrawPending || isWithdrawConfirming) && <Loader2 size={14} className="animate-spin" />}
+                    {isWithdrawPending ? 'Confirm in wallet…' : isWithdrawConfirming ? 'Withdrawing…' : 'Withdraw ETH'}
+                  </button>
+                </div>
+              </section>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Modals */}
+      {selectedLand && (
+        <CreateListingModal
+          isOpen={isListingModalOpen}
+          onClose={() => setListingModalOpen(false)}
+          land={{
+            land_id: selectedLand.landId,
+            location: selectedLand.location,
+            area_sq_yards: selectedLand.areaSqYards,
+            currentShareBps: selectedLand.shareBps,
+          }}
+          sellerAddress={address as string}
+          onSuccess={(txHash) => {
+            setTxToast({ hash: txHash, message: `${selectedLand.landId} listed on marketplace!` });
+            setListingModalOpen(false);
+            loadLands();
+          }}
+        />
+      )}
+      {selectedLand && (
+        <TransferModal
+          isOpen={isTransferModalOpen}
+          onClose={() => setTransferModalOpen(false)}
+          landId={selectedLand.landId}
+          currentShareBps={selectedLand.shareBps}
+          onSuccess={(txHash) => {
+            setTxToast({ hash: txHash, message: 'Share transferred on-chain!' });
+            setTransferModalOpen(false);
+            loadLands();
+          }}
+        />
+      )}
+    </main>
   );
 }

@@ -5,13 +5,17 @@ import { useRouter } from 'next/navigation';
 import { useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { ShieldCheck, Loader2, X } from 'lucide-react';
 import { supabase } from '@/src/lib/supabase';
-import { CONTRACT_ABI, CONTRACT_ADDRESS } from '@/src/utils/contract';
+import { CONTRACT_V9_ABI, CONTRACT_V9_ADDRESS } from '@/src/utils/contractV9';
 
 interface UserAuthModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
+/**
+ * Registration modal — unchanged function signature (registerUser(name, cnic)).
+ * Updated to use CONTRACT_V9_ABI / CONTRACT_V9_ADDRESS.
+ */
 export default function UserAuthModal({ isOpen, onClose }: UserAuthModalProps) {
   const [name, setName] = useState('');
   const [cnic, setCnic] = useState('');
@@ -26,10 +30,10 @@ export default function UserAuthModal({ isOpen, onClose }: UserAuthModalProps) {
     e.preventDefault();
     if (!name || !cnic) return;
     setErrorMsg('');
-    setStatus('Validating Identity in Govt DB...');
+    setStatus('Validating identity in Govt DB…');
 
     try {
-      // 1. Read-Only check against Govt DB
+      // Read-only check against mock Govt citizen DB
       const { data: citizen, error } = await supabase
         .from('govt_citizens')
         .select('*')
@@ -38,16 +42,17 @@ export default function UserAuthModal({ isOpen, onClose }: UserAuthModalProps) {
 
       if (error || !citizen) {
         setStatus('');
-        setErrorMsg('CNIC not found in the government census database. Double-check the number and try again.');
+        setErrorMsg(
+          'CNIC not found in the government census database. Double-check the number and try again.'
+        );
         return;
       }
 
-      setStatus('Identity Verified. Please sign in MetaMask...');
+      setStatus('Identity verified. Please sign in MetaMask…');
 
-      // 2. Register on Blockchain
       writeContract({
-        address: CONTRACT_ADDRESS as `0x${string}`,
-        abi: CONTRACT_ABI,
+        address: CONTRACT_V9_ADDRESS,
+        abi: CONTRACT_V9_ABI,
         functionName: 'registerUser',
         args: [name, cnic],
       });
@@ -89,24 +94,36 @@ export default function UserAuthModal({ isOpen, onClose }: UserAuthModalProps) {
           <div>
             <label className="text-xs text-white/60 mb-1 block">Full Name (as per CNIC)</label>
             <input
-              type="text" value={name} onChange={(e) => setName(e.target.value)}
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
               className="w-full bg-black/30 border border-white/10 p-3 rounded-xl text-white focus:outline-none focus:border-brand-primary"
-              placeholder="e.g. Ali Khan" required
+              placeholder="e.g. Ali Khan"
+              required
             />
           </div>
           <div>
             <label className="text-xs text-white/60 mb-1 block">CNIC Number</label>
             <input
-              type="text" value={cnic} onChange={(e) => setCnic(e.target.value)}
+              type="text"
+              value={cnic}
+              onChange={(e) => setCnic(e.target.value)}
               className="w-full bg-black/30 border border-white/10 p-3 rounded-xl text-white focus:outline-none focus:border-brand-primary font-mono"
-              placeholder="11111-1111111-1" required
+              placeholder="11111-1111111-1"
+              required
             />
           </div>
 
           {(status || isPending || isConfirming || isSuccess) && (
             <div className="flex items-center justify-center gap-2 text-sm text-brand-secondary bg-brand-secondary/10 py-2 rounded-lg">
               <Loader2 className="animate-spin" size={16} />
-              {isSuccess ? 'Registered! Redirecting…' : isPending ? 'Check Wallet...' : isConfirming ? 'Registering on Chain...' : status}
+              {isSuccess
+                ? 'Registered! Redirecting…'
+                : isPending
+                ? 'Check Wallet…'
+                : isConfirming
+                ? 'Registering on Chain…'
+                : status}
             </div>
           )}
 

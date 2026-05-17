@@ -1,158 +1,189 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
 import { createWalletClient, http, createPublicClient } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { sepolia } from 'viem/chains';
-import { CONTRACT_ABI, CONTRACT_ADDRESS } from '@/src/utils/contract';
+import { createClient } from '@supabase/supabase-js';
+import { CONTRACT_V9_ABI, CONTRACT_V9_ADDRESS } from '@/src/utils/contractV9';
 
-export async function POST(request: Request) {
-  console.log("🚀 API: Verification Process Started");
+const RPC_URL = 'https://ethereum-sepolia.publicnode.com';
 
-  // ---------------------------------------------------------
-  // 1. SAFETY CHECK: Environment Variables
-  // ---------------------------------------------------------
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY;
-  const adminPrivateKey = process.env.ADMIN_PRIVATE_KEY;
+const LAND_TYPE_MAP: Record<string, number> = {
+  RESIDENTIAL: 0,
+  AGRICULTURAL: 1,
+  COMMERCIAL: 2,
+};
 
-  // Log status to Terminal (Not Browser)
-  console.log("   - Supabase URL:", supabaseUrl ? "✅ Loaded" : "❌ MISSING");
-  console.log("   - Supabase Key:", supabaseKey ? "✅ Loaded" : "❌ MISSING");
-  console.log("   - Admin Private Key:", adminPrivateKey ? "✅ Loaded" : "❌ MISSING");
+/** Pin a JSON object to Pinata and return its CID. */
+async function pinJsonToPinata(json: object, name: string): Promise<string> {
+  const apiKey = process.env.NEXT_PUBLIC_PINATA_API_KEY;
+  const apiSecret =
+    process.env.NEXT_PUBLIC_PINATA_API_SECRET ?? process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
 
-  if (!supabaseUrl || !supabaseKey || !adminPrivateKey) {
-    return NextResponse.json({ 
-      error: "Server Error: Missing Environment Variables. Check your .env.local file." 
-    }, { status: 500 });
+  if (!apiKey || !apiSecret) {
+    throw new Error('Pinata API keys not configured. Set NEXT_PUBLIC_PINATA_API_KEY and NEXT_PUBLIC_PINATA_API_SECRET in .env.local');
   }
 
-  // ---------------------------------------------------------
-  // 2. INITIALIZE CLIENTS
-  // ---------------------------------------------------------
-  const supabase = createClient(supabaseUrl, supabaseKey);
-  const account = privateKeyToAccount(adminPrivateKey as `0x${string}`);
-
-  const rpcUrl = "https://ethereum-sepolia.publicnode.com";
-  
-  const walletClient = createWalletClient({
-    account,
-    chain: sepolia,
-    transport: http(rpcUrl)
+  const res = await fetch('https://api.pinata.cloud/pinning/pinJSONToIPFS', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      pinata_api_key: apiKey,
+      pinata_secret_api_key: apiSecret,
+    },
+    body: JSON.stringify({
+      pinataContent: json,
+      pinataMetadata: { name },
+    }),
   });
 
-  const publicClient = createPublicClient({
-    chain: sepolia,
-    transport: http(rpcUrl)
-  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Pinata error: ${text}`);
+  }
+
+  const data = await res.json();
+  return data.IpfsHash as string;
+}
+
+/**
+ * POST /api/verify  — self-service land mint
+ *
+ * Body: { userAddress: string, landId: string }
+ *
+ * Flow:
+ *  1. Read user CNIC from chain
+ *  2. Cross-check govt_land_records (CNIC must own this land)
+ *  3. Confirm land not already on-chain
+ *  4. If no ipfs_hash in DB → auto-generate ERC-721 metadata from DB fields and pin to Pinata
+ *  5. Sign proposeLandImport as REGISTRAR (single owner, 10 000 bps)
+ */
+export async function POST(request: Request) {
+  const adminPrivateKey = process.env.ADMIN_PRIVATE_KEY;
+  if (!adminPrivateKey) {
+    return NextResponse.json({ error: 'Server misconfigured: missing ADMIN_PRIVATE_KEY' }, { status: 500 });
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY;
+  if (!supabaseUrl || !supabaseKey) {
+    return NextResponse.json({ error: 'Server misconfigured: missing Supabase credentials' }, { status: 500 });
+  }
 
   try {
-    // ---------------------------------------------------------
-    // 3. PARSE REQUEST
-    // ---------------------------------------------------------
-    const { userAddress, landId } = await request.json();
-    
+    const { userAddress, landId } = (await request.json()) as {
+      userAddress: string;
+      landId: string;
+    };
+
     if (!userAddress || !landId) {
-      return NextResponse.json({ error: "Missing parameters: userAddress or landId" }, { status: 400 });
+      return NextResponse.json({ error: 'Missing required fields: userAddress, landId' }, { status: 400 });
     }
 
-    console.log(`   - Processing: ${landId} for ${userAddress}`);
+    const publicClient = createPublicClient({ chain: sepolia, transport: http(RPC_URL) });
 
-    // ---------------------------------------------------------
-    // 4. READ USER IDENTITY FROM BLOCKCHAIN
-    // Function: users(address) -> [name, cnic, isRegistered]
-    // ---------------------------------------------------------
-    const userProfile = await publicClient.readContract({
-      address: CONTRACT_ADDRESS,
-      abi: CONTRACT_ABI,
-      functionName: 'users',
-      args: [userAddress]
-    }) as [string, string, boolean];
+    // 1. Confirm wallet is registered and get CNIC
+    const userProfile = (await publicClient.readContract({
+      address: CONTRACT_V9_ADDRESS,
+      abi: CONTRACT_V9_ABI,
+      functionName: 'getUser',
+      args: [userAddress as `0x${string}`],
+    })) as { name: string; cnic: string; isRegistered: boolean };
 
-    const userCnic = userProfile[1];
-    const isRegistered = userProfile[2];
-
-    if (!isRegistered || !userCnic) {
-      return NextResponse.json({ error: "User is not registered on the Blockchain." }, { status: 400 });
+    if (!userProfile.isRegistered) {
+      return NextResponse.json({ error: 'Wallet not registered. Register first.' }, { status: 403 });
     }
-    console.log(`   - Identity Verified: ${userCnic}`);
 
-    // ---------------------------------------------------------
-    // 5. CROSS-MATCH WITH MOCK GOVT DATABASE
-    // ---------------------------------------------------------
-    const { data: govtRecord, error: dbError } = await supabase
+    // 2. Cross-check govt_land_records
+    const db = createClient(supabaseUrl, supabaseKey);
+    const { data: records, error: dbErr } = await db
       .from('govt_land_records')
       .select('*')
       .eq('land_id', landId)
-      .eq('owner_cnic', userCnic)
-      .single();
+      .eq('owner_cnic', userProfile.cnic)
+      .limit(1);
 
-    if (dbError || !govtRecord) {
-      console.log("   - DB Match Failed:", dbError?.message);
-      return NextResponse.json({ error: "Verification Failed: This Land ID is not linked to your CNIC in Govt Records." }, { status: 403 });
+    if (dbErr) {
+      return NextResponse.json({ error: `Database error: ${dbErr.message}` }, { status: 500 });
     }
-    console.log("   - Government Record Found ✅");
+    if (!records || records.length === 0) {
+      return NextResponse.json(
+        { error: 'Land not found in govt registry for your CNIC.' },
+        { status: 403 }
+      );
+    }
 
-    // ---------------------------------------------------------
-    // 6. CHECK IF ALREADY MINTED (Prevent Double Spend)
-    // ---------------------------------------------------------
-    const landRecord = await publicClient.readContract({
-      address: CONTRACT_ADDRESS,
-      abi: CONTRACT_ABI,
+    const govtRecord = records[0];
+
+    // 3. Confirm not already on-chain
+    const onChain = (await publicClient.readContract({
+      address: CONTRACT_V9_ADDRESS,
+      abi: CONTRACT_V9_ABI,
       functionName: 'getLandRecord',
-      args: [landId]
-    }) as { currentOwner: string };
+      args: [landId],
+    })) as { landId: string };
 
-    const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-    if (landRecord.currentOwner !== ZERO_ADDRESS) {
-      return NextResponse.json({ error: "This Land is already digitized on the Blockchain." }, { status: 400 });
+    if (onChain.landId && onChain.landId !== '') {
+      return NextResponse.json({ error: 'Land already minted on-chain.' }, { status: 409 });
     }
 
-    // ---------------------------------------------------------
-    // 7. EXECUTE MINTING (Admin pays Gas)
-    // ---------------------------------------------------------
-    // Use the IPFS hash from govt record if present, else derive from landId
-    const ipfsHash = (govtRecord.ipfs_hash as string | undefined) || `verified_${landId}`;
+    // 4. Get or auto-generate IPFS metadata
+    let ipfsHash: string = govtRecord.ipfs_hash ?? '';
 
-    // Map land_type string to contract enum: 0=RESIDENTIAL 1=AGRICULTURAL 2=COMMERCIAL
-    const landTypeMap: Record<string, number> = { residential: 0, agricultural: 1, commercial: 2 };
-    const rawType = ((govtRecord.land_type as string | undefined) || '').toLowerCase();
-    const landType = landTypeMap[rawType] ?? 0;
+    if (!ipfsHash) {
+      // Auto-generate ERC-721 metadata from Supabase fields — no manual upload needed
+      const landTypeStr = (govtRecord.land_type ?? 'RESIDENTIAL').toUpperCase();
+      const metadata = {
+        name: `LandLedger Plot — ${landId}`,
+        description: `On-chain land record for plot ${landId}, digitised from the govt allotment registry.`,
+        attributes: [
+          { trait_type: 'Land ID', value: landId },
+          { trait_type: 'Land Type', value: govtRecord.land_type ?? 'RESIDENTIAL' },
+          { trait_type: 'Location', value: govtRecord.location ?? '' },
+          { trait_type: 'Area (sq yards)', value: govtRecord.area_sq_yards ?? 0 },
+          { trait_type: 'Owner CNIC', value: userProfile.cnic },
+          { trait_type: 'Owner Name', value: userProfile.name },
+        ],
+      };
 
-    console.log("\\n=======================================================");
-    console.log("🚀 MINTING TRANSACTION DETAILS (ADMIN WALLET)");
-    console.log("=======================================================");
-    console.log(`➡️ Admin Wallet Action: ${account.address}`);
-    console.log(`➡️ Target SC Address: ${CONTRACT_ADDRESS}`);
-    console.log(`➡️ Target User Wallet: ${userAddress}`);
-    console.log(`➡️ Land ID Minting: ${landId}`);
-    console.log(`➡️ IPFS Metadata: ${ipfsHash}`);
-    console.log("-------------------------------------------------------");
-    console.log("   ⏳ Simulating Transaction (Gas estimation & Access Checks)...");
+      ipfsHash = await pinJsonToPinata(metadata, `LandLedger-${landId}`);
+
+      // Store CID back in Supabase so future calls skip re-pinning
+      await db
+        .from('govt_land_records')
+        .update({ ipfs_hash: ipfsHash })
+        .eq('land_id', landId);
+
+      console.log(`Auto-generated metadata for ${landId}: ${ipfsHash}`);
+    }
+
+    // 5. Sign proposeLandImport as REGISTRAR
+    const landType = LAND_TYPE_MAP[(govtRecord.land_type ?? 'RESIDENTIAL').toUpperCase()] ?? 0;
+
+    const account = privateKeyToAccount(adminPrivateKey as `0x${string}`);
+    const walletClient = createWalletClient({ account, chain: sepolia, transport: http(RPC_URL) });
+
     const { request: txRequest } = await publicClient.simulateContract({
       account,
-      address: CONTRACT_ADDRESS,
-      abi: CONTRACT_ABI,
-      functionName: 'storeVerifiedLandRecord', // Matches your Smart Contract
-      args: [userAddress, landId, ipfsHash, landType]
+      address: CONTRACT_V9_ADDRESS,
+      abi: CONTRACT_V9_ABI,
+      functionName: 'proposeLandImport',
+      args: [
+        landId,
+        ipfsHash,
+        landType,
+        [userAddress as `0x${string}`],
+        [10000],
+        '',
+      ],
     });
 
-    console.log("   ✅ Simulation Passed. NO Reverts detected.");
-    console.log("   📡 Broadcasting to Sepolia Testnet...");
-    
-    // Execute the transaction
     const txHash = await walletClient.writeContract(txRequest);
-
-    console.log("-------------------------------------------------------");
-    console.log(`   🎉 Transaction Sent Successfully!`);
-    console.log(`   🔗 Explorer Link: https://sepolia.etherscan.io/tx/${txHash}`);
-    console.log(`   📝 Tx Hash: ${txHash}`);
-    console.log("=======================================================\\n");
+    console.log(`proposeLandImport tx for ${landId}: ${txHash}`);
 
     return NextResponse.json({ success: true, txHash });
-
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Internal Server Error';
-    console.error('❌ API Error:', message);
+    console.error('API /api/verify error:', message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
