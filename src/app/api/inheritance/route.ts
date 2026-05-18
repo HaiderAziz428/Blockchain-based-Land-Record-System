@@ -66,7 +66,7 @@ export async function POST(request: Request) {
         deceasedHolder as `0x${string}`,
         heirAddresses,
         heirShares,
-        courtOrderCid || '',
+        courtOrderCid || 'N/A',
         BigInt(appealId ?? 0),
       ],
     });

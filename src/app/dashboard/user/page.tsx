@@ -251,6 +251,7 @@ export default function UserDashboard() {
   } | null>(null);
   const [isCheckingPlan, setIsCheckingPlan] = useState(false);
   const [planError, setPlanError] = useState('');
+  const [hasApproved, setHasApproved] = useState(false);
 
   const approveProcessedRef = useRef(false);
   const disputeProcessedRef = useRef(false);
@@ -265,14 +266,21 @@ export default function UserDashboard() {
     if (isApproveSuccess && approveHash && !approveProcessedRef.current) {
       approveProcessedRef.current = true;
       setTxToast({ hash: approveHash, message: 'Succession plan approved!' });
+      setHasApproved(true);
+      handleCheckSuccessionPlan();
+      loadLands();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isApproveSuccess, approveHash]);
 
   useEffect(() => {
     if (isDisputeSuccess && disputeHash && !disputeProcessedRef.current) {
       disputeProcessedRef.current = true;
       setTxToast({ hash: disputeHash, message: 'Succession plan disputed.' });
+      handleCheckSuccessionPlan();
+      loadLands();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDisputeSuccess, disputeHash]);
 
   const handleCheckSuccessionPlan = async () => {
@@ -280,22 +288,46 @@ export default function UserDashboard() {
     setIsCheckingPlan(true);
     setPlanError('');
     setSuccessionPlan(null);
+    setHasApproved(false);
     try {
-      const result = await publicClient.readContract({
+      const raw = await publicClient.readContract({
         address: CONTRACT_V9_ADDRESS,
         abi: CONTRACT_V9_ABI,
         functionName: 'getInheritanceRequest',
         args: [successionLandId.trim()],
-      }) as unknown as {
-        deceasedHolder: string;
-        heirs: string[];
-        heirShares: number[];
-        approvalCount: bigint;
-        isExecuted: boolean;
-        courtOrderCid: string;
-        votingDeadline: bigint;
+      });
+      // Viem may return a tuple (array) or a named object depending on ABI shape.
+      // Normalise to a plain named object either way.
+      const r = raw as unknown as Record<string, unknown>;
+      const result = {
+        deceasedHolder: (r.deceasedHolder ?? (raw as unknown[])[0] ?? '') as string,
+        heirs:          (r.heirs          ?? (raw as unknown[])[1] ?? []) as string[],
+        heirShares:     (r.heirShares     ?? (raw as unknown[])[2] ?? []) as number[],
+        approvalCount:  (r.approvalCount  ?? (raw as unknown[])[3] ?? BigInt(0)) as bigint,
+        isExecuted:     (r.isExecuted     ?? (raw as unknown[])[4] ?? false) as boolean,
+        courtOrderCid:  (r.courtOrderCid  ?? (raw as unknown[])[6] ?? '') as string,
+        votingDeadline: (r.votingDeadline ?? (raw as unknown[])[9] ?? BigInt(0)) as bigint,
       };
-      setSuccessionPlan(result);
+      const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
+      if (!result.deceasedHolder || result.deceasedHolder === ZERO_ADDR) {
+        setPlanError('No succession plan found for this land ID.');
+      } else {
+        setSuccessionPlan(result);
+        // Check if the connected wallet already voted on this plan
+        if (address) {
+          try {
+            const voted = await publicClient.readContract({
+              address: CONTRACT_V9_ADDRESS,
+              abi: CONTRACT_V9_ABI,
+              functionName: 'hasHeirApproved',
+              args: [successionLandId.trim(), address],
+            }) as boolean;
+            setHasApproved(voted);
+          } catch {
+            setHasApproved(false);
+          }
+        }
+      }
     } catch {
       setPlanError('No succession plan found or land does not exist.');
     }
@@ -742,11 +774,11 @@ export default function UserDashboard() {
                         </div>
                         <div className="flex justify-between">
                           <span className="text-white/40">Approvals</span>
-                          <span className="font-mono">{String(successionPlan.approvalCount)} / {successionPlan.heirs.length}</span>
+                          <span className="font-mono">{String(successionPlan.approvalCount)} / {successionPlan.heirs?.length ?? 0}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-white/40">Heirs</span>
-                          <span className="font-mono">{successionPlan.heirs.length}</span>
+                          <span className="font-mono">{successionPlan.heirs?.length ?? 0}</span>
                         </div>
                         {successionPlan.votingDeadline > BigInt(0) && (
                           <div className="flex justify-between">
@@ -757,40 +789,46 @@ export default function UserDashboard() {
                       </div>
 
                       {!successionPlan.isExecuted && (
-                        <div className="flex gap-3">
-                          <button
-                            onClick={() => {
-                              approveProcessedRef.current = false;
-                              writeApprove({
-                                address: CONTRACT_V9_ADDRESS,
-                                abi: CONTRACT_V9_ABI,
-                                functionName: 'approveSuccessionPlan',
-                                args: [successionLandId.trim()],
-                              });
-                            }}
-                            disabled={isApprovePending}
-                            className="btn-primary flex-1 flex items-center justify-center gap-2"
-                          >
-                            {isApprovePending && <Loader2 size={14} className="animate-spin" />}
-                            Approve
-                          </button>
-                          <button
-                            onClick={() => {
-                              disputeProcessedRef.current = false;
-                              writeDispute({
-                                address: CONTRACT_V9_ADDRESS,
-                                abi: CONTRACT_V9_ABI,
-                                functionName: 'disputeSuccessionPlan',
-                                args: [successionLandId.trim()],
-                              });
-                            }}
-                            disabled={isDisputePending}
-                            className="btn-ghost flex-1 flex items-center justify-center gap-2 text-red-400 hover:text-red-300"
-                          >
-                            {isDisputePending && <Loader2 size={14} className="animate-spin" />}
-                            Dispute
-                          </button>
-                        </div>
+                        hasApproved ? (
+                          <div className="text-center py-3 text-sm text-green-400 bg-green-500/10 border border-green-500/20 rounded-xl">
+                            You have already voted on this plan
+                          </div>
+                        ) : (
+                          <div className="flex gap-3">
+                            <button
+                              onClick={() => {
+                                approveProcessedRef.current = false;
+                                writeApprove({
+                                  address: CONTRACT_V9_ADDRESS,
+                                  abi: CONTRACT_V9_ABI,
+                                  functionName: 'approveSuccessionPlan',
+                                  args: [successionLandId.trim()],
+                                });
+                              }}
+                              disabled={isApprovePending}
+                              className="btn-primary flex-1 flex items-center justify-center gap-2"
+                            >
+                              {isApprovePending && <Loader2 size={14} className="animate-spin" />}
+                              Approve
+                            </button>
+                            <button
+                              onClick={() => {
+                                disputeProcessedRef.current = false;
+                                writeDispute({
+                                  address: CONTRACT_V9_ADDRESS,
+                                  abi: CONTRACT_V9_ABI,
+                                  functionName: 'disputeSuccessionPlan',
+                                  args: [successionLandId.trim()],
+                                });
+                              }}
+                              disabled={isDisputePending}
+                              className="btn-ghost flex-1 flex items-center justify-center gap-2 text-red-400 hover:text-red-300"
+                            >
+                              {isDisputePending && <Loader2 size={14} className="animate-spin" />}
+                              Dispute
+                            </button>
+                          </div>
+                        )
                       )}
                     </div>
                   )}

@@ -555,8 +555,8 @@ function AdminDashboardInner() {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs text-white/50">Court Order CID</label>
-                  <input type="text" value={inhCourtCid} onChange={(e) => setInhCourtCid(e.target.value)} className="field w-full mt-1" />
+                  <label className="text-xs text-white/50">Court Order CID <span className="text-red-400">*</span></label>
+                  <input type="text" value={inhCourtCid} onChange={(e) => setInhCourtCid(e.target.value)} className="field w-full mt-1" placeholder="IPFS CID or 'N/A' for testing" required />
                 </div>
                 <div>
                   <label className="text-xs text-white/50">Appeal ID (0 if none)</label>
@@ -571,16 +571,21 @@ function AdminDashboardInner() {
                     <Plus size={12} /> Add heir
                   </button>
                 </div>
+                <div className="grid grid-cols-[1fr_96px_24px] gap-2 mb-1 px-1">
+                  <span className="text-xs text-white/30">Wallet address (0x…)</span>
+                  <span className="text-xs text-white/30">Share (bps)</span>
+                  <span />
+                </div>
                 <div className="space-y-2">
                   {inhHeirs.map((h, i) => (
-                    <div key={i} className="flex gap-2 items-center">
-                      <input type="text" value={h.address} onChange={(e) => updateHeir(i, 'address', e.target.value)} className="field flex-1 font-mono text-xs" placeholder="0x…" required />
-                      <input type="number" value={h.shareBps} onChange={(e) => updateHeir(i, 'shareBps', e.target.value)} className="field w-24 font-mono text-xs" placeholder="bps" required />
-                      {inhHeirs.length > 1 && (
+                    <div key={i} className="grid grid-cols-[1fr_96px_24px] gap-2 items-center">
+                      <input type="text" value={h.address} onChange={(e) => updateHeir(i, 'address', e.target.value)} className="field font-mono text-xs" placeholder="0x…" required />
+                      <input type="number" value={h.shareBps} onChange={(e) => updateHeir(i, 'shareBps', e.target.value)} className="field font-mono text-xs" placeholder="bps" required />
+                      {inhHeirs.length > 1 ? (
                         <button type="button" onClick={() => removeHeir(i)} className="text-red-400 hover:text-red-300">
                           <Trash2 size={14} />
                         </button>
-                      )}
+                      ) : <span />}
                     </div>
                   ))}
                 </div>
