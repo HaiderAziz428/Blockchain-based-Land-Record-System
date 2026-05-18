@@ -46,6 +46,12 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
+    if (heirs.some((h) => !h.shareBps || h.shareBps <= 0)) {
+      return NextResponse.json(
+        { error: 'Each heir must have shareBps > 0' },
+        { status: 400 }
+      );
+    }
 
     const account = privateKeyToAccount(adminPrivateKey as `0x${string}`);
     const walletClient = createWalletClient({ account, chain: sepolia, transport: http(RPC_URL) });

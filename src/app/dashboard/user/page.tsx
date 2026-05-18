@@ -299,14 +299,15 @@ export default function UserDashboard() {
       // Viem may return a tuple (array) or a named object depending on ABI shape.
       // Normalise to a plain named object either way.
       const r = raw as unknown as Record<string, unknown>;
+      const t = raw as unknown as unknown[];
       const result = {
-        deceasedHolder: (r.deceasedHolder ?? (raw as unknown[])[0] ?? '') as string,
-        heirs:          (r.heirs          ?? (raw as unknown[])[1] ?? []) as string[],
-        heirShares:     (r.heirShares     ?? (raw as unknown[])[2] ?? []) as number[],
-        approvalCount:  (r.approvalCount  ?? (raw as unknown[])[3] ?? BigInt(0)) as bigint,
-        isExecuted:     (r.isExecuted     ?? (raw as unknown[])[4] ?? false) as boolean,
-        courtOrderCid:  (r.courtOrderCid  ?? (raw as unknown[])[6] ?? '') as string,
-        votingDeadline: (r.votingDeadline ?? (raw as unknown[])[9] ?? BigInt(0)) as bigint,
+        deceasedHolder: (r.deceasedHolder ?? t[0] ?? '') as string,
+        heirs:          (r.heirs          ?? t[1] ?? []) as string[],
+        heirShares:     (r.heirShares     ?? t[2] ?? []) as number[],
+        approvalCount:  (r.approvalCount  ?? t[3] ?? BigInt(0)) as bigint,
+        isExecuted:     (r.isExecuted     ?? t[4] ?? false) as boolean,
+        courtOrderCid:  (r.courtOrderCid  ?? t[6] ?? '') as string,
+        votingDeadline: (r.votingDeadline ?? t[9] ?? BigInt(0)) as bigint,
       };
       const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
       if (!result.deceasedHolder || result.deceasedHolder === ZERO_ADDR) {
@@ -345,6 +346,7 @@ export default function UserDashboard() {
   } | null>(null);
   const [isCheckingSubdiv, setIsCheckingSubdiv] = useState(false);
   const [subdivError, setSubdivError] = useState('');
+  const [hasSubdivApproved, setHasSubdivApproved] = useState(false);
 
   const subdivApproveProcessedRef = useRef(false);
   const subdivDisputeProcessedRef = useRef(false);
@@ -359,14 +361,21 @@ export default function UserDashboard() {
     if (isSubdivApproveSuccess && subdivApproveHash && !subdivApproveProcessedRef.current) {
       subdivApproveProcessedRef.current = true;
       setTxToast({ hash: subdivApproveHash, message: 'Subdivision approved!' });
+      setHasSubdivApproved(true);
+      handleCheckSubdivision();
+      loadLands();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSubdivApproveSuccess, subdivApproveHash]);
 
   useEffect(() => {
     if (isSubdivDisputeSuccess && subdivDisputeHash && !subdivDisputeProcessedRef.current) {
       subdivDisputeProcessedRef.current = true;
       setTxToast({ hash: subdivDisputeHash, message: 'Subdivision disputed.' });
+      handleCheckSubdivision();
+      loadLands();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSubdivDisputeSuccess, subdivDisputeHash]);
 
   const handleCheckSubdivision = async () => {
@@ -374,6 +383,7 @@ export default function UserDashboard() {
     setIsCheckingSubdiv(true);
     setSubdivError('');
     setSubdivPlan(null);
+    setHasSubdivApproved(false);
     try {
       const result = await publicClient.readContract({
         address: CONTRACT_V9_ADDRESS,
@@ -388,6 +398,17 @@ export default function UserDashboard() {
         isExecuted: boolean;
       };
       setSubdivPlan(result);
+      if (address) {
+        try {
+          const voted = await publicClient.readContract({
+            address: CONTRACT_V9_ADDRESS,
+            abi: CONTRACT_V9_ABI,
+            functionName: 'hasShareholderApprovedSubdivision',
+            args: [subdivLandId.trim(), address],
+          }) as boolean;
+          setHasSubdivApproved(voted);
+        } catch { /* non-critical */ }
+      }
     } catch {
       setSubdivError('No subdivision plan found or land does not exist.');
     }
@@ -411,7 +432,8 @@ export default function UserDashboard() {
         functionName: 'getActiveOccupancyAgreements',
         args: [landId],
       })) as OccupancyAgreement[];
-      setOccupancyAgreements(agreements);
+      const now = BigInt(Math.floor(Date.now() / 1000));
+      setOccupancyAgreements(agreements.filter((a) => a.endTime > now));
     } catch {
       setOccError('Failed to load occupancy agreements.');
     }
@@ -789,7 +811,15 @@ export default function UserDashboard() {
                       </div>
 
                       {!successionPlan.isExecuted && (
-                        hasApproved ? (
+                        (() => {
+                          const now = BigInt(Math.floor(Date.now() / 1000));
+                          const deadlinePassed = successionPlan.votingDeadline > BigInt(0) && now > successionPlan.votingDeadline;
+                          if (deadlinePassed) return (
+                            <div className="text-center py-3 text-sm text-orange-400 bg-orange-500/10 border border-orange-500/20 rounded-xl">
+                              Voting period has ended — contact admin to resolve
+                            </div>
+                          );
+                          return hasApproved ? (
                           <div className="text-center py-3 text-sm text-green-400 bg-green-500/10 border border-green-500/20 rounded-xl">
                             You have already voted on this plan
                           </div>
@@ -828,7 +858,8 @@ export default function UserDashboard() {
                               Dispute
                             </button>
                           </div>
-                        )
+                        );
+                        })()
                       )}
                     </div>
                   )}
@@ -892,40 +923,46 @@ export default function UserDashboard() {
                       </div>
 
                       {!subdivPlan.isExecuted && (
-                        <div className="flex gap-3">
-                          <button
-                            onClick={() => {
-                              subdivApproveProcessedRef.current = false;
-                              writeSubdivApprove({
-                                address: CONTRACT_V9_ADDRESS,
-                                abi: CONTRACT_V9_ABI,
-                                functionName: 'approveSubdivision',
-                                args: [subdivLandId.trim()],
-                              });
-                            }}
-                            disabled={isSubdivApprovePending}
-                            className="btn-primary flex-1 flex items-center justify-center gap-2"
-                          >
-                            {isSubdivApprovePending && <Loader2 size={14} className="animate-spin" />}
-                            Approve
-                          </button>
-                          <button
-                            onClick={() => {
-                              subdivDisputeProcessedRef.current = false;
-                              writeSubdivDispute({
-                                address: CONTRACT_V9_ADDRESS,
-                                abi: CONTRACT_V9_ABI,
-                                functionName: 'disputeSubdivision',
-                                args: [subdivLandId.trim()],
-                              });
-                            }}
-                            disabled={isSubdivDisputePending}
-                            className="btn-ghost flex-1 flex items-center justify-center gap-2 text-red-400 hover:text-red-300"
-                          >
-                            {isSubdivDisputePending && <Loader2 size={14} className="animate-spin" />}
-                            Dispute
-                          </button>
-                        </div>
+                        hasSubdivApproved ? (
+                          <div className="text-center py-3 text-sm text-green-400 bg-green-500/10 border border-green-500/20 rounded-xl">
+                            You have already voted on this plan
+                          </div>
+                        ) : (
+                          <div className="flex gap-3">
+                            <button
+                              onClick={() => {
+                                subdivApproveProcessedRef.current = false;
+                                writeSubdivApprove({
+                                  address: CONTRACT_V9_ADDRESS,
+                                  abi: CONTRACT_V9_ABI,
+                                  functionName: 'approveSubdivision',
+                                  args: [subdivLandId.trim()],
+                                });
+                              }}
+                              disabled={isSubdivApprovePending}
+                              className="btn-primary flex-1 flex items-center justify-center gap-2"
+                            >
+                              {isSubdivApprovePending && <Loader2 size={14} className="animate-spin" />}
+                              Approve
+                            </button>
+                            <button
+                              onClick={() => {
+                                subdivDisputeProcessedRef.current = false;
+                                writeSubdivDispute({
+                                  address: CONTRACT_V9_ADDRESS,
+                                  abi: CONTRACT_V9_ABI,
+                                  functionName: 'disputeSubdivision',
+                                  args: [subdivLandId.trim()],
+                                });
+                              }}
+                              disabled={isSubdivDisputePending}
+                              className="btn-ghost flex-1 flex items-center justify-center gap-2 text-red-400 hover:text-red-300"
+                            >
+                              {isSubdivDisputePending && <Loader2 size={14} className="animate-spin" />}
+                              Dispute
+                            </button>
+                          </div>
+                        )
                       )}
                     </div>
                   )}

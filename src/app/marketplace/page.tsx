@@ -16,7 +16,24 @@ import {
 } from '@/src/utils/contractV9';
 import { supabase } from '@/src/lib/supabase';
 
-const IPFS_GATEWAY = 'https://gateway.pinata.cloud/ipfs';
+const IPFS_GATEWAYS = [
+  'https://gateway.pinata.cloud/ipfs',
+  'https://ipfs.io/ipfs',
+  'https://cloudflare-ipfs.com/ipfs',
+];
+
+async function fetchIpfs(cid: string): Promise<Response> {
+  for (const gw of IPFS_GATEWAYS) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 5000);
+    try {
+      const res = await fetch(`${gw}/${cid}`, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (res.ok) return res;
+    } catch { clearTimeout(t); }
+  }
+  throw new Error('All IPFS gateways failed');
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -170,7 +187,7 @@ export default function MarketplacePage() {
 
                 // Hydrate from IPFS
                 try {
-                  const res = await fetch(`${IPFS_GATEWAY}/${listing.metadataHash}`);
+                  const res = await fetchIpfs(listing.metadataHash);
                   if (res.ok) {
                     const meta = await res.json();
                     item.description = meta.description;
@@ -289,7 +306,7 @@ export default function MarketplacePage() {
                     <div className="relative h-44 bg-black/40">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
-                        src={`${IPFS_GATEWAY}/${item.photos[0]}`}
+                        src={`${IPFS_GATEWAYS[0]}/${item.photos[0]}`}
                         alt={item.landId}
                         className="w-full h-full object-cover opacity-80"
                         onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
@@ -335,7 +352,7 @@ export default function MarketplacePage() {
 
                     {item.listing.metadataHash && (
                       <a
-                        href={`${IPFS_GATEWAY}/${item.listing.metadataHash}`}
+                        href={`${IPFS_GATEWAYS[0]}/${item.listing.metadataHash}`}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="flex items-center gap-1 text-xs text-white/30 hover:text-indigo-400"

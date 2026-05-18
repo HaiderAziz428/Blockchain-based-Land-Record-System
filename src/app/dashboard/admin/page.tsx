@@ -185,6 +185,22 @@ function AdminDashboardInner() {
   const [inhHeirs, setInhHeirs] = useState<HeirEntry[]>([{ address: '', shareBps: '' }]);
   const [isInitiating, setIsInitiating] = useState(false);
   const [inhResult, setInhResult] = useState('');
+  const [deceasedBalance, setDeceasedBalance] = useState<string | null>(null);
+
+  const fetchDeceasedBalance = async () => {
+    if (!inhLandId.trim() || !inhDeceased.trim() || !publicClient) return;
+    try {
+      const bps = await publicClient.readContract({
+        address: CONTRACT_V9_ADDRESS,
+        abi: CONTRACT_V9_ABI,
+        functionName: 'getShareBps',
+        args: [inhLandId.trim(), inhDeceased.trim() as `0x${string}`],
+      }) as number;
+      setDeceasedBalance(`${bps} bps (${(bps / 100).toFixed(2)}%)`);
+    } catch {
+      setDeceasedBalance('Could not fetch — check Land ID and address');
+    }
+  };
 
   const addHeir = () => setInhHeirs((h) => [...h, { address: '', shareBps: '' }]);
   const removeHeir = (i: number) => setInhHeirs((h) => h.filter((_, idx) => idx !== i));
@@ -549,8 +565,16 @@ function AdminDashboardInner() {
                   <input type="text" value={inhLandId} onChange={(e) => setInhLandId(e.target.value)} className="field w-full mt-1" required />
                 </div>
                 <div>
-                  <label className="text-xs text-white/50">Deceased Holder Address</label>
-                  <input type="text" value={inhDeceased} onChange={(e) => setInhDeceased(e.target.value)} className="field w-full mt-1 font-mono text-xs" placeholder="0x…" required />
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs text-white/50">Deceased Holder Address</label>
+                    <button type="button" onClick={fetchDeceasedBalance} className="text-xs text-indigo-400 hover:text-indigo-300">
+                      Fetch share →
+                    </button>
+                  </div>
+                  <input type="text" value={inhDeceased} onChange={(e) => { setInhDeceased(e.target.value); setDeceasedBalance(null); }} className="field w-full mt-1 font-mono text-xs" placeholder="0x…" required />
+                  {deceasedBalance && (
+                    <p className="text-xs mt-1 text-indigo-300">Share: <span className="font-mono">{deceasedBalance}</span> — heirs must sum to this</p>
+                  )}
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -780,6 +804,7 @@ function AdminDashboardInner() {
                 <button
                   disabled={!roleTarget || isRevokePending}
                   onClick={() => {
+                    if (!confirm(`Revoke role from ${roleTarget}? This cannot be undone without re-granting.`)) return;
                     revokeRoleRef.current = false;
                     writeRevokeRole({
                       address: CONTRACT_V9_ADDRESS,

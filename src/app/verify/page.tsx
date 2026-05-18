@@ -27,7 +27,27 @@ import {
 } from 'lucide-react';
 import { formatEther } from 'viem';
 
-const IPFS_GATEWAY = 'https://gateway.pinata.cloud/ipfs';
+const IPFS_GATEWAYS = [
+  'https://gateway.pinata.cloud/ipfs',
+  'https://ipfs.io/ipfs',
+  'https://cloudflare-ipfs.com/ipfs',
+];
+
+async function fetchIpfs(cid: string): Promise<Response> {
+  for (const gw of IPFS_GATEWAYS) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 5000);
+    try {
+      const res = await fetch(`${gw}/${cid}`, { signal: ctrl.signal });
+      clearTimeout(t);
+      if (res.ok) return res;
+    } catch { clearTimeout(t); }
+  }
+  throw new Error('All IPFS gateways failed');
+}
+
+// Keep a constant for link hrefs (first preferred gateway)
+const IPFS_GATEWAY = IPFS_GATEWAYS[0];
 
 const STATUS_META: Record<number, { tone: string; Icon: React.ComponentType<{ size?: number; className?: string }> }> = {
   [LandStatusV9.PENDING_VERIFICATION]:       { tone: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20', Icon: Clock },
@@ -97,8 +117,8 @@ type SubdivisionPlan = {
 
 const ZERO = '0x0000000000000000000000000000000000000000';
 
-function maskCnic(cnic: string) {
-  if (!cnic || cnic.length < 5) return cnic;
+function maskCnic(cnic: string | null | undefined) {
+  if (!cnic || cnic.length < 5) return '(hidden)';
   return cnic.slice(0, 5) + '-XXXXX-X';
 }
 
