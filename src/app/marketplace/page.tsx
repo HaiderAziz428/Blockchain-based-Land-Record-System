@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useAccount, usePublicClient, useReadContract, useWaitForTransactionReceipt, useWriteContract } from 'wagmi';
-import { formatEther, parseEther } from 'viem';
+import { formatEther } from 'viem';
 import Navbar from '@/src/components/Navbar';
 import TxToast from '@/src/components/TxToast';
 import { Loader2, Clock, ExternalLink, ShoppingCart, AlertCircle } from 'lucide-react';
@@ -105,7 +105,8 @@ export default function MarketplacePage() {
       setPendingBuyItem(null);
       fetchListings();
     }
-  }, [isBuySuccess, buyHash]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBuySuccess, buyHash]); // fetchListings/pendingBuyItem/profile.cnic are stable
 
   // ── Load listings ─────────────────────────────────────────────────────────
 
@@ -223,7 +224,8 @@ export default function MarketplacePage() {
 
   useEffect(() => {
     if (mounted) fetchListings();
-  }, [mounted, publicClient]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, publicClient]); // fetchListings is a stable local function
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
@@ -252,17 +254,20 @@ export default function MarketplacePage() {
   };
 
   return (
-    <main className="min-h-screen bg-brand-dark text-white">
+    <main className="min-h-screen bg-background text-foreground">
       <Navbar />
 
       {txToast && (
         <TxToast txHash={txToast.hash} message={txToast.message} onDismiss={() => setTxToast(null)} />
       )}
 
-      <div className="max-w-6xl mx-auto p-6 space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold">Land Share Marketplace</h1>
-          <p className="text-white/50 text-sm mt-1">
+      <div className="max-w-6xl mx-auto px-6 py-8 space-y-6">
+        <div className="mb-2">
+          <span className="text-xs font-mono text-muted tracking-[0.2em] uppercase">On-Chain Listings</span>
+          <h1 className="font-sans font-semibold text-3xl text-foreground tracking-tight mt-2">
+            Land Share Marketplace
+          </h1>
+          <p className="text-muted text-sm mt-2 font-light">
             Browse fractional land share listings. Prices and ownership are fully on-chain.
           </p>
         </div>
@@ -271,7 +276,7 @@ export default function MarketplacePage() {
           <div className="flex items-start gap-3 p-4 rounded-xl border bg-yellow-500/10 border-yellow-500/20 text-yellow-300 text-sm">
             <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
             <span>{notice}</span>
-            <button onClick={() => setNotice(null)} className="ml-auto text-white/40 hover:text-white">×</button>
+            <button onClick={() => setNotice(null)} className="ml-auto text-muted hover:text-foreground">×</button>
           </div>
         )}
 
@@ -283,12 +288,12 @@ export default function MarketplacePage() {
         )}
 
         {isLoading ? (
-          <div className="flex items-center gap-2 text-white/40 py-12 justify-center">
+          <div className="flex items-center gap-2 text-muted py-12 justify-center">
             <Loader2 size={20} className="animate-spin" />
             Loading marketplace…
           </div>
         ) : items.length === 0 ? (
-          <div className="glass-card p-12 rounded-2xl text-center text-white/40">
+          <div className="glass-card p-12 rounded-2xl text-center text-muted">
             No active share listings found. Check back later.
           </div>
         ) : (
@@ -313,7 +318,7 @@ export default function MarketplacePage() {
                       />
                     </div>
                   ) : (
-                    <div className="h-32 bg-white/[0.03] flex items-center justify-center text-white/10 text-xs">
+                    <div className="h-32 bg-surface/40 flex items-center justify-center text-muted/20 text-xs">
                       No photos
                     </div>
                   )}
@@ -322,22 +327,22 @@ export default function MarketplacePage() {
                   <div className="p-5 flex-1 flex flex-col gap-3">
                     <div className="flex items-start justify-between gap-2">
                       <div>
-                        <p className="font-mono text-sm text-indigo-400">{item.landId}</p>
-                        <p className="text-xs text-white/40 mt-0.5">{landTypeLabel(item.landType as LandTypeV9)}</p>
+                        <p className="font-mono text-sm text-accent">{item.landId}</p>
+                        <p className="text-xs text-muted mt-0.5">{landTypeLabel(item.landType as LandTypeV9)}</p>
                         {item.location && (
-                          <p className="text-xs text-white/50 mt-0.5">{item.location}</p>
+                          <p className="text-xs text-muted mt-0.5">{item.location}</p>
                         )}
                       </div>
-                      <span className="pill border bg-indigo-500/10 text-indigo-400 border-indigo-500/20 whitespace-nowrap">
+                      <span className="pill border bg-accent/10 text-accent border-accent/20 whitespace-nowrap">
                         {formatBps(item.listing.shareBpsForSale)}
                       </span>
                     </div>
 
                     {item.description && (
-                      <p className="text-xs text-white/60 line-clamp-2">{item.description}</p>
+                      <p className="text-xs text-muted line-clamp-2">{item.description}</p>
                     )}
 
-                    <div className="text-xs text-white/40 flex items-center gap-1">
+                    <div className="text-xs text-muted flex items-center gap-1">
                       <Clock size={11} />
                       {isExpired ? (
                         <span className="text-red-400">Expired</span>
@@ -346,7 +351,7 @@ export default function MarketplacePage() {
                       )}
                     </div>
 
-                    <div className="text-xs text-white/40 font-mono truncate">
+                    <div className="text-xs text-muted font-mono truncate">
                       Seller: {item.listing.seller.slice(0, 8)}…{item.listing.seller.slice(-6)}
                     </div>
 
@@ -355,7 +360,7 @@ export default function MarketplacePage() {
                         href={`${IPFS_GATEWAYS[0]}/${item.listing.metadataHash}`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="flex items-center gap-1 text-xs text-white/30 hover:text-indigo-400"
+                        className="flex items-center gap-1 text-xs text-muted/60 hover:text-accent"
                       >
                         <ExternalLink size={10} /> IPFS metadata
                       </a>
@@ -374,10 +379,10 @@ export default function MarketplacePage() {
 
                     <div className="mt-auto pt-3 border-t border-white/5 flex items-center justify-between">
                       <div>
-                        <p className="text-white font-bold text-lg">
+                        <p className="text-foreground font-bold text-lg">
                           {formatEther(item.listing.price)} ETH
                         </p>
-                        <p className="text-xs text-white/30">
+                        <p className="text-xs text-muted/60">
                           {item.area_sq_yards ? `${item.area_sq_yards} sq yd` : ''}
                         </p>
                       </div>

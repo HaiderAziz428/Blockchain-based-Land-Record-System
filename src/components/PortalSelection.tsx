@@ -9,15 +9,14 @@ import { User, Building2, ArrowRight, Loader2, Lock, CheckCircle, AlertCircle } 
 
 export default function PortalSelection() {
   const [mounted, setMounted] = useState(false);
-  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { setMounted(true); }, []);
 
   const { address, isConnected } = useAccount();
   const router = useRouter();
 
   const [isModalOpen, setModalOpen] = useState(false);
-  const [isChecking, setIsChecking] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [isChecking,  setIsChecking]  = useState(false);
+  const [notice,      setNotice]      = useState<string | null>(null);
 
   const { data: userData, isLoading: isBlockchainLoading } = useReadContract({
     address: CONTRACT_V9_ADDRESS,
@@ -31,7 +30,7 @@ export default function PortalSelection() {
   const isRegistered = Boolean(profile?.isRegistered);
 
   const handleUserPortalClick = async () => {
-    if (!isConnected) { setNotice('Connect your wallet first — top-right Connect button.'); return; }
+    if (!isConnected) { setNotice('Connect your wallet first — use the Connect button top-right.'); return; }
     setNotice(null);
     setIsChecking(true);
     if (isRegistered) {
@@ -46,126 +45,123 @@ export default function PortalSelection() {
   };
 
   const handleAdminPortalClick = () => {
-    if (!isConnected) { setNotice('Connect your wallet first — top-right Connect button.'); return; }
+    if (!isConnected) { setNotice('Connect your wallet first — use the Connect button top-right.'); return; }
     setNotice(null);
     router.push('/dashboard/admin');
   };
 
   return (
-    <section id="portals" className="px-6 md:px-12 py-16 scroll-mt-20 max-w-5xl mx-auto">
+    <section id="portals" className="px-6 pb-24 scroll-mt-20 max-w-7xl mx-auto">
 
-      {/* Section header — left aligned, no marketing pre-header */}
-      <div className="mb-8 flex items-end justify-between gap-4 flex-wrap">
-        <div>
-          <h2 className="text-2xl md:text-3xl font-semibold tracking-tight text-white">Pick a portal</h2>
-          <p className="text-sm text-gray-500 mt-1">Wallet-gated. Admin access is restricted to the contract owner.</p>
+      {/* Section header */}
+      <div className="mb-4">
+        <span className="text-xs font-semibold font-sans text-muted tracking-[0.2em] uppercase">
+          Access Portals
+        </span>
+        <div className="flex items-end justify-between gap-4 flex-wrap mt-3">
+          <h2 className="font-serif font-light text-4xl md:text-[2.75rem] text-foreground leading-tight">
+            Choose your portal
+          </h2>
+          {mounted && isConnected && (
+            <span className="font-mono text-xs text-muted mb-1">
+              {address?.slice(0, 6)}…{address?.slice(-4)}
+            </span>
+          )}
         </div>
-        {mounted && isConnected && (
-          <span className="text-[11px] text-gray-500 font-mono">
-            {address?.slice(0, 6)}…{address?.slice(-4)}
-          </span>
-        )}
+        <p className="font-sans text-sm text-muted mt-2">
+          Wallet-gated. Admin access is restricted to the contract owner.
+        </p>
       </div>
 
+      {/* Notice banner */}
       {notice && (
-        <div className="mb-5 px-4 py-2.5 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-200 text-sm flex items-start gap-2">
+        <div className="mb-6 px-4 py-3 rounded-xl bg-warning/10 border border-warning/30 text-warning text-sm font-sans flex items-start gap-2">
           <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
           <span>{notice}</span>
+          <button onClick={() => setNotice(null)} className="ml-auto text-xs opacity-60 hover:opacity-100">✕</button>
         </div>
       )}
 
-      {/* Two portal rows — denser, info-first, asymmetric content */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* Portal cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
 
-        {/* USER */}
+        {/* ── Landowner ── */}
         <button
           type="button"
           onClick={handleUserPortalClick}
-          className="group relative text-left rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.16] transition-colors p-6 overflow-hidden disabled:cursor-wait"
           disabled={!mounted || isBlockchainLoading || isChecking}
+          className="group relative text-left rounded-2xl border border-border/60 bg-surface/50 hover:bg-surface hover:border-accent/40 transition-all p-5 sm:p-7 overflow-hidden disabled:cursor-wait"
         >
           {(!mounted || isBlockchainLoading || isChecking) && (
-            <div className="absolute inset-0 bg-[#0a0b1e]/85 backdrop-blur-sm flex items-center justify-center z-20 rounded-xl gap-2 text-xs text-gray-400">
-              <Loader2 className="animate-spin text-indigo-400" size={16} />
+            <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-20 rounded-2xl gap-2 text-xs text-muted font-sans">
+              <Loader2 className="animate-spin text-accent" size={16} />
               Reading on-chain registration…
             </div>
           )}
 
-          <div className="flex items-start justify-between gap-3 mb-4">
+          <div className="flex items-start justify-between gap-3 mb-5">
             <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-md bg-white/5 border border-white/10 flex items-center justify-center">
-                <User size={16} className="text-gray-200" strokeWidth={1.6} />
+              <div className="w-10 h-10 rounded-xl bg-accent/10 border border-accent/20 flex items-center justify-center">
+                <User size={18} className="text-accent" strokeWidth={1.5} />
               </div>
               <div>
-                <h3 className="text-base font-semibold text-white">Landowner</h3>
-                <p className="text-[11px] text-gray-500 font-mono">/dashboard/user</p>
+                <h3 className="font-sans text-base font-semibold text-foreground">Landowner</h3>
+                <p className="font-mono text-[11px] text-muted">/dashboard/user</p>
               </div>
             </div>
             {mounted && isConnected && isRegistered ? (
-              <span className="flex items-center gap-1 text-[11px] text-green-400 bg-green-500/10 border border-green-500/20 px-2 py-0.5 rounded">
-                <CheckCircle size={10} /> registered
+              <span className="flex items-center gap-1 text-[11px] font-sans text-success bg-success/10 border border-success/20 px-2.5 py-1 rounded-full">
+                <CheckCircle size={10} /> Registered
               </span>
             ) : (
-              <span className="text-[11px] text-gray-500">unregistered</span>
+              <span className="text-[11px] font-sans text-muted">Unregistered</span>
             )}
           </div>
 
-          <dl className="text-[13px] divide-y divide-white/[0.04]">
-            <div className="flex justify-between py-1.5">
-              <dt className="text-gray-500">Mint, transfer, list, vote on succession</dt>
-            </div>
-            <div className="flex justify-between py-1.5">
-              <dt className="text-gray-500">CNIC verified once against govt registry</dt>
-            </div>
-            <div className="flex justify-between py-1.5">
-              <dt className="text-gray-500">All actions signed by your own wallet</dt>
-            </div>
-          </dl>
+          <ul className="font-sans text-sm text-muted space-y-2 mb-6">
+            <li className="flex items-center gap-2 border-t border-border/40 pt-2">Mint, transfer, list &amp; vote on succession</li>
+            <li className="flex items-center gap-2 border-t border-border/40 pt-2">CNIC verified once against allotment registry</li>
+            <li className="flex items-center gap-2 border-t border-border/40 pt-2">All actions signed by your own wallet</li>
+          </ul>
 
-          <div className="mt-5 pt-4 border-t border-white/[0.06] flex items-center justify-between text-sm">
-            <span className="text-gray-400">
-              {mounted && isConnected && isRegistered ? 'Open dashboard' : 'Begin onboarding'}
+          <div className="flex items-center justify-between">
+            <span className="font-sans text-sm text-muted">
+              {mounted && isConnected && isRegistered ? 'Open dashboard →' : 'Begin onboarding →'}
             </span>
-            <ArrowRight size={15} className="text-gray-400 group-hover:text-white group-hover:translate-x-0.5 transition-all" />
+            <ArrowRight size={15} className="text-muted group-hover:text-accent group-hover:translate-x-0.5 transition-all" />
           </div>
         </button>
 
-        {/* ADMIN */}
+        {/* ── Government / Developer ── */}
         <button
           type="button"
           onClick={handleAdminPortalClick}
-          className="group relative text-left rounded-xl border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/[0.16] transition-colors p-6"
+          className="group relative text-left rounded-2xl border border-border/60 bg-surface/50 hover:bg-surface hover:border-accent/40 transition-all p-5 sm:p-7"
         >
-          <div className="flex items-start justify-between gap-3 mb-4">
+          <div className="flex items-start justify-between gap-3 mb-5">
             <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-md bg-white/5 border border-white/10 flex items-center justify-center">
-                <Building2 size={16} className="text-gray-200" strokeWidth={1.6} />
+              <div className="w-10 h-10 rounded-xl bg-accent/10 border border-accent/20 flex items-center justify-center">
+                <Building2 size={18} className="text-accent" strokeWidth={1.5} />
               </div>
               <div>
-                <h3 className="text-base font-semibold text-white">Government / Developer</h3>
-                <p className="text-[11px] text-gray-500 font-mono">/dashboard/admin</p>
+                <h3 className="font-sans text-base font-semibold text-foreground">Government / Developer</h3>
+                <p className="font-mono text-[11px] text-muted">/dashboard/admin</p>
               </div>
             </div>
-            <span className="flex items-center gap-1 text-[11px] text-gray-500 bg-white/5 border border-white/10 px-2 py-0.5 rounded">
-              <Lock size={10} /> owner-only
+            <span className="flex items-center gap-1 text-[11px] font-sans text-muted bg-surface border border-border/60 px-2.5 py-1 rounded-full">
+              <Lock size={10} /> Owner only
             </span>
           </div>
 
-          <dl className="text-[13px] divide-y divide-white/[0.04]">
-            <div className="flex justify-between py-1.5">
-              <dt className="text-gray-500">Initiate succession plans (multi-heir)</dt>
-            </div>
-            <div className="flex justify-between py-1.5">
-              <dt className="text-gray-500">Resolve disputes — force or revert</dt>
-            </div>
-            <div className="flex justify-between py-1.5">
-              <dt className="text-gray-500">Whitelist developer / authority wallets</dt>
-            </div>
-          </dl>
+          <ul className="font-sans text-sm text-muted space-y-2 mb-6">
+            <li className="border-t border-border/40 pt-2">Initiate succession plans (multi-heir)</li>
+            <li className="border-t border-border/40 pt-2">Resolve disputes — force execute or revert</li>
+            <li className="border-t border-border/40 pt-2">Whitelist developer / authority wallets</li>
+          </ul>
 
-          <div className="mt-5 pt-4 border-t border-white/[0.06] flex items-center justify-between text-sm">
-            <span className="text-gray-400">Open admin tools</span>
-            <ArrowRight size={15} className="text-gray-400 group-hover:text-white group-hover:translate-x-0.5 transition-all" />
+          <div className="flex items-center justify-between">
+            <span className="font-sans text-sm text-muted">Open admin tools →</span>
+            <ArrowRight size={15} className="text-muted group-hover:text-accent group-hover:translate-x-0.5 transition-all" />
           </div>
         </button>
       </div>

@@ -1,88 +1,80 @@
 'use client';
 
 import Link from 'next/link';
-import { Shield, Database, Zap, Landmark, ArrowRight } from 'lucide-react';
+import { ArrowRight, ExternalLink } from 'lucide-react';
 
-const FACTS = [
-  { label: 'Properties Registered', value: '50K+' },
-  { label: 'Active Users', value: '25K+' },
-  { label: 'Transactions', value: '100%' },
-  { label: 'System Uptime', value: '24/7' },
-];
-
-const FEATURES = [
-  { icon: Zap, label: 'Secure Transactions' },
-  { icon: Database, label: 'Immutable Data' },
-  { icon: Landmark, label: 'Government-Verified' },
+const STATS = [
+  { label: 'Token Standard', value: 'ERC-721', sub: 'PakLandRegistry · PLR' },
+  { label: 'Document Storage', value: 'IPFS', sub: 'Content-addressed · Pinata' },
+  { label: 'Network', value: 'Mainnet', sub: 'Ethereum' },
 ];
 
 export default function Hero() {
-  const scrollToPortals = () => {
+  const scrollToPortals = () =>
     document.getElementById('portals')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
 
   return (
-    <section className="flex flex-col items-center justify-center text-center px-6 py-24 min-h-[calc(100vh-64px)]">
+    <section className="relative flex flex-col items-center justify-center min-h-[calc(100vh-64px)] px-6 pt-12 sm:pt-0 overflow-hidden">
 
-      {/* Badge */}
-      <div className="inline-flex items-center gap-2 bg-white/5 border border-white/10 text-gray-400 px-4 py-1.5 rounded-full text-xs font-medium mb-8 tracking-wide">
-        <Shield size={13} className="text-indigo-400" />
-        Secured by Ethereum &amp; IPFS
+      {/* Ambient glow */}
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute top-[-10%] left-1/2 -translate-x-1/2 w-[700px] h-[500px] rounded-full bg-accent/8 blur-[120px]" />
+        <div className="absolute bottom-0 left-1/4 w-[400px] h-[300px] rounded-full bg-accent/5 blur-[100px]" />
       </div>
 
-      {/* Heading */}
-      <h1 className="text-5xl md:text-6xl font-bold leading-[1.1] tracking-tight mb-5 max-w-3xl text-white">
-        Blockchain Based
-        <br />
-        <span className="text-indigo-400">Land Records</span>
-      </h1>
+      {/* Content */}
+      <div className="relative z-10 text-center max-w-4xl mx-auto">
 
-      {/* Subheading */}
-      <p className="text-gray-400 text-base mb-10 max-w-xl leading-relaxed">
-        Pakistan's first blockchain-based Land Registry. Secure, transparent, and immutable property records for everyone.
-      </p>
+        {/* Eyebrow */}
+        <div className="inline-flex items-center gap-2.5 mb-8">
+          <span className="h-px w-8 bg-accent/60" />
+          <span className="font-mono text-[11px] tracking-[0.2em] text-accent uppercase">
+            Ethereum · ERC-721 · IPFS
+          </span>
+          <span className="h-px w-8 bg-accent/60" />
+        </div>
 
-      {/* Feature pills */}
-      <div className="flex flex-wrap justify-center items-center gap-x-6 gap-y-3 mb-10 text-sm text-gray-400">
-        {FEATURES.map(({ icon: Icon, label }, i) => (
-          <div key={i} className="flex items-center gap-1.5">
-            <Icon size={14} className="text-indigo-400 flex-shrink-0" />
-            <span>{label}</span>
-            {i < FEATURES.length - 1 && (
-              <span className="ml-6 hidden md:inline-block w-px h-3 bg-white/10" />
-            )}
-          </div>
-        ))}
-      </div>
+        {/* Headline */}
+        <h1 className="font-sans font-bold text-5xl md:text-[4.5rem] leading-[1.0] tracking-tight text-foreground mb-6">
+          Blockchain Based
+          <br />
+          <span className="text-accent">Land Records</span>
+        </h1>
 
-      {/* CTA Buttons */}
-      <div className="flex flex-wrap justify-center gap-3 mb-20">
-        <button
-          type="button"
-          onClick={scrollToPortals}
-          className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 transition-colors px-7 py-2.5 rounded-lg text-sm font-semibold text-white"
-        >
-          Get Started <ArrowRight size={15} />
-        </button>
-        <Link
-          href="/verify"
-          className="bg-white/5 border border-white/10 hover:bg-white/[0.08] transition-colors px-7 py-2.5 rounded-lg text-sm font-semibold text-gray-300"
-        >
-          Verify a Property
-        </Link>
-      </div>
+        {/* Sub */}
+        <p className="font-sans text-muted text-md leading-relaxed max-w-xl mx-auto mb-10">
+          Pakistan&apos;s first blockchain-based Land Registry. Secure, transparent, and immutable property records for everyone.
+        </p>
 
-      {/* Honest project facts (replaces fake "50K+ users" stats) */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 w-full max-w-2xl">
-        {FACTS.map((f, i) => (
-          <div
-            key={i}
-            className="bg-white/[0.03] border border-white/[0.07] p-5 rounded-2xl text-left"
+        {/* CTAs */}
+        <div className="flex flex-wrap justify-center gap-3 mb-14">
+          <button
+            type="button"
+            onClick={scrollToPortals}
+            className="inline-flex items-center gap-2 bg-accent hover:bg-accent-hover text-white font-semibold font-sans px-8 py-3 rounded-lg text-sm transition-colors"
           >
-            <p className="text-xl md:text-2xl font-bold text-white mb-0.5">{f.value}</p>
-            <p className="text-gray-500 text-xs">{f.label}</p>
-          </div>
-        ))}
+            Get Started <ArrowRight size={14} />
+          </button>
+          <Link
+            href="/verify"
+            className="inline-flex items-center gap-2 border border-border/70 bg-surface/30 hover:bg-surface/60 text-foreground font-medium font-sans px-8 py-3 rounded-lg text-sm transition-colors backdrop-blur-sm"
+          >
+            Verify a Plot <ExternalLink size={13} />
+          </Link>
+        </div>
+      </div>
+
+      {/* Stats — unified panel */}
+      <div className="relative z-10 w-full max-w-2xl">
+        <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-border/60 border border-border/60 rounded-xl overflow-hidden bg-surface/20 backdrop-blur-sm">
+          {STATS.map(({ label, value, sub }) => (
+            <div key={label} className="px-6 py-5">
+              <p className="font-mono text-2xl font-semibold text-accent mb-1">{value}</p>
+              <p className="font-sans text-sm font-medium text-foreground mb-0.5">{label}</p>
+              <p className="font-mono text-[11px] text-muted">{sub}</p>
+            </div>
+          ))}
+        </div>
       </div>
     </section>
   );

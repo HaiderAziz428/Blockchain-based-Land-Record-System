@@ -131,7 +131,7 @@ export async function POST(request: Request) {
 
     if (!ipfsHash) {
       // Auto-generate ERC-721 metadata from Supabase fields — no manual upload needed
-      const landTypeStr = (govtRecord.land_type ?? 'RESIDENTIAL').toUpperCase();
+      void (govtRecord.land_type ?? 'RESIDENTIAL').toUpperCase(); // consumed via attributes below
       const metadata = {
         name: `LandLedger Plot — ${landId}`,
         description: `On-chain land record for plot ${landId}, digitised from the govt allotment registry.`,

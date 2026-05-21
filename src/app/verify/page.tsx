@@ -27,27 +27,7 @@ import {
 } from 'lucide-react';
 import { formatEther } from 'viem';
 
-const IPFS_GATEWAYS = [
-  'https://gateway.pinata.cloud/ipfs',
-  'https://ipfs.io/ipfs',
-  'https://cloudflare-ipfs.com/ipfs',
-];
-
-async function fetchIpfs(cid: string): Promise<Response> {
-  for (const gw of IPFS_GATEWAYS) {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 5000);
-    try {
-      const res = await fetch(`${gw}/${cid}`, { signal: ctrl.signal });
-      clearTimeout(t);
-      if (res.ok) return res;
-    } catch { clearTimeout(t); }
-  }
-  throw new Error('All IPFS gateways failed');
-}
-
-// Keep a constant for link hrefs (first preferred gateway)
-const IPFS_GATEWAY = IPFS_GATEWAYS[0];
+const IPFS_GATEWAY = 'https://gateway.pinata.cloud/ipfs';
 
 const STATUS_META: Record<number, { tone: string; Icon: React.ComponentType<{ size?: number; className?: string }> }> = {
   [LandStatusV9.PENDING_VERIFICATION]:       { tone: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20', Icon: Clock },
@@ -281,18 +261,19 @@ export default function VerifyPage() {
   // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
-    <main className="min-h-screen bg-brand-dark text-white">
+    <main className="min-h-screen bg-background text-foreground">
       <Navbar />
 
-      <div className="max-w-3xl mx-auto p-6 space-y-8">
+      <div className="max-w-3xl mx-auto px-6 py-8 space-y-8">
 
         {/* Header */}
-        <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <ShieldCheck size={24} className="text-indigo-400" />
-            Public Land Verification
+        <div className="mb-2">
+          <span className="text-xs font-mono text-muted tracking-[0.2em] uppercase">Public Record</span>
+          <h1 className="font-sans font-semibold text-3xl text-foreground tracking-tight mt-2 flex items-center gap-3">
+            <ShieldCheck size={26} className="text-accent" strokeWidth={1.5} />
+            Land Verification
           </h1>
-          <p className="text-white/50 text-sm mt-1">
+          <p className="text-muted text-sm mt-2 font-light">
             Look up any land record by Land ID. No wallet required. Ownership and history are on-chain and tamper-proof.
           </p>
         </div>
@@ -327,9 +308,9 @@ export default function VerifyPage() {
               {/* Top row: Land ID + status pill */}
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <p className="text-xs text-white/40 mb-0.5">Land ID</p>
-                  <p className="font-mono text-xl text-white">{record.landId}</p>
-                  <p className="text-sm text-white/50 mt-0.5">{landTypeLabel(record.landType as LandTypeV9)}</p>
+                  <p className="text-xs text-muted mb-0.5">Land ID</p>
+                  <p className="font-mono text-xl text-foreground">{record.landId}</p>
+                  <p className="text-sm text-muted mt-0.5">{landTypeLabel(record.landType as LandTypeV9)}</p>
                 </div>
                 {statusMeta && (
                   <span className={`pill border text-xs ${statusMeta.tone}`}>
@@ -373,7 +354,7 @@ export default function VerifyPage() {
                   href={`${IPFS_GATEWAY}/${record.ipfsHash}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-2 text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
+                  className="flex items-center gap-2 text-sm text-accent hover:text-accent transition-colors"
                 >
                   <FileText size={15} />
                   View Deed Document on IPFS
@@ -386,7 +367,7 @@ export default function VerifyPage() {
             {shareholders.length > 0 && (
               <div className="glass-card p-6 rounded-2xl space-y-4">
                 <h2 className="font-semibold flex items-center gap-2">
-                  <Users size={16} className="text-indigo-400" />
+                  <Users size={16} className="text-accent" />
                   Current Ownership
                 </h2>
                 <div className="space-y-3">
@@ -395,19 +376,19 @@ export default function VerifyPage() {
                       <div>
                         {s.profile?.isRegistered ? (
                           <>
-                            <p className="text-sm text-white font-medium">{s.profile.name}</p>
-                            <p className="text-xs text-white/40 font-mono mt-0.5">
+                            <p className="text-sm text-foreground font-medium">{s.profile.name}</p>
+                            <p className="text-xs text-muted font-mono mt-0.5">
                               CNIC {maskCnic(s.profile.cnic)}
                             </p>
                           </>
                         ) : (
-                          <p className="text-sm font-mono text-white/60">{shortAddr(s.address)}</p>
+                          <p className="text-sm font-mono text-muted">{shortAddr(s.address)}</p>
                         )}
-                        <p className="text-xs text-white/30 font-mono mt-0.5">{shortAddr(s.address)}</p>
+                        <p className="text-xs text-muted/60 font-mono mt-0.5">{shortAddr(s.address)}</p>
                       </div>
                       <div className="text-right">
-                        <p className="text-indigo-400 font-bold text-lg">{formatBps(s.bps)}</p>
-                        <p className="text-xs text-white/30">{s.bps} bps</p>
+                        <p className="text-accent font-bold text-lg">{formatBps(s.bps)}</p>
+                        <p className="text-xs text-muted/60">{s.bps} bps</p>
                       </div>
                     </div>
                   ))}
@@ -419,14 +400,14 @@ export default function VerifyPage() {
             {history.length > 0 && (
               <div className="glass-card p-6 rounded-2xl space-y-4">
                 <h2 className="font-semibold flex items-center gap-2">
-                  <ShieldCheck size={16} className="text-indigo-400" />
+                  <ShieldCheck size={16} className="text-accent" />
                   Chain of Title
-                  <span className="text-xs text-white/30 font-normal ml-1">— complete tamper-proof history</span>
+                  <span className="text-xs text-muted/60 font-normal ml-1">— complete tamper-proof history</span>
                 </h2>
 
                 <div className="relative">
                   {/* Vertical timeline line */}
-                  <div className="absolute left-[7px] top-2 bottom-2 w-px bg-white/10" />
+                  <div className="absolute left-[7px] top-2 bottom-2 w-px bg-border/60" />
 
                   <div className="space-y-5">
                     {history.map((h, i) => {
@@ -442,8 +423,8 @@ export default function VerifyPage() {
                               isMint
                                 ? 'bg-green-500 border-green-400'
                                 : isPaid
-                                ? 'bg-indigo-500 border-indigo-400'
-                                : 'bg-white/20 border-white/30'
+                                ? 'bg-accent border-accent'
+                                : 'bg-border border-border'
                             }`} />
                           </div>
 
@@ -452,14 +433,14 @@ export default function VerifyPage() {
                             <div className="flex flex-wrap items-start justify-between gap-2">
                               <div>
                                 {isMint ? (
-                                  <p className="text-sm text-white font-medium">
+                                  <p className="text-sm text-foreground font-medium">
                                     Govt verified &amp; minted
                                     {isFirst && ' — Land first registered on-chain'}
                                   </p>
                                 ) : (
-                                  <p className="text-sm text-white font-medium">
+                                  <p className="text-sm text-foreground font-medium">
                                     {isPaid ? 'Sold' : 'Transferred'}{' '}
-                                    <span className="text-indigo-400">{formatBps(h.shareBps)}</span>
+                                    <span className="text-accent">{formatBps(h.shareBps)}</span>
                                     {isPaid
                                       ? ` for ${formatEther(h.price)} ETH`
                                       : ' (gift / free transfer)'}
@@ -468,23 +449,23 @@ export default function VerifyPage() {
 
                                 {/* From → To */}
                                 {!isMint && (
-                                  <div className="flex items-center gap-1.5 mt-1 text-xs text-white/50">
+                                  <div className="flex items-center gap-1.5 mt-1 text-xs text-muted">
                                     <span className="font-mono">{shortAddr(h.from)}</span>
                                     <ArrowRight size={10} />
                                     <span className="font-mono">{shortAddr(h.to)}</span>
                                   </div>
                                 )}
                                 {isMint && (
-                                  <div className="text-xs text-white/50 mt-1 font-mono">
+                                  <div className="text-xs text-muted mt-1 font-mono">
                                     → {shortAddr(h.to)}
                                   </div>
                                 )}
                               </div>
 
                               <div className="text-right">
-                                <p className="text-xs text-white/40">{fmtDate(h.timestamp)}</p>
+                                <p className="text-xs text-muted">{fmtDate(h.timestamp)}</p>
                                 {isPaid && (
-                                  <p className="text-xs text-indigo-400 font-mono mt-0.5">
+                                  <p className="text-xs text-accent font-mono mt-0.5">
                                     {formatEther(h.price)} ETH
                                   </p>
                                 )}
@@ -503,21 +484,21 @@ export default function VerifyPage() {
             {importProposal && (
               <div className="glass-card p-6 rounded-2xl space-y-3">
                 <h2 className="font-semibold text-yellow-400">Import Proposal</h2>
-                <div className="text-xs text-white/50 space-y-1">
+                <div className="text-xs text-muted space-y-1">
                   <p>Verifications: {String(importProposal.verificationCount)} / {importProposal.proposedOwners.length}</p>
                   <p>Deadline: {fmtDate(importProposal.verificationDeadline)}</p>
                 </div>
                 {importProposal.courtOrderCid && (
                   <a href={`${IPFS_GATEWAY}/${importProposal.courtOrderCid}`} target="_blank" rel="noopener noreferrer"
-                    className="flex items-center gap-1 text-xs text-indigo-400 hover:underline">
+                    className="flex items-center gap-1 text-xs text-accent hover:underline">
                     <ExternalLink size={11} /> Court order
                   </a>
                 )}
                 <div className="space-y-1.5">
                   {importProposal.proposedOwners.map((addr, i) => (
-                    <div key={addr} className="flex justify-between text-xs font-mono text-white/60">
+                    <div key={addr} className="flex justify-between text-xs font-mono text-muted">
                       <span>{shortAddr(addr)}</span>
-                      <span className="text-indigo-400">{formatBps(importProposal.proposedShares[i])}</span>
+                      <span className="text-accent">{formatBps(importProposal.proposedShares[i])}</span>
                     </div>
                   ))}
                 </div>
@@ -528,7 +509,7 @@ export default function VerifyPage() {
             {inheritanceRequest && (
               <div className="glass-card p-6 rounded-2xl space-y-3">
                 <h2 className="font-semibold text-orange-400">Inheritance Request</h2>
-                <div className="text-xs text-white/50 space-y-1">
+                <div className="text-xs text-muted space-y-1">
                   <p>Deceased: <span className="font-mono">{shortAddr(inheritanceRequest.deceasedHolder)}</span></p>
                   <p>Approvals: {String(inheritanceRequest.approvalCount)} / {inheritanceRequest.heirs.length}</p>
                   <p>Deadline: {fmtDate(inheritanceRequest.votingDeadline)}</p>
@@ -538,15 +519,15 @@ export default function VerifyPage() {
                 </div>
                 {inheritanceRequest.courtOrderCid && (
                   <a href={`${IPFS_GATEWAY}/${inheritanceRequest.courtOrderCid}`} target="_blank" rel="noopener noreferrer"
-                    className="flex items-center gap-1 text-xs text-indigo-400 hover:underline">
+                    className="flex items-center gap-1 text-xs text-accent hover:underline">
                     <ExternalLink size={11} /> Court order
                   </a>
                 )}
                 <div className="space-y-1.5">
                   {inheritanceRequest.heirs.map((heir, i) => (
-                    <div key={heir} className="flex justify-between text-xs font-mono text-white/60">
+                    <div key={heir} className="flex justify-between text-xs font-mono text-muted">
                       <span>{shortAddr(heir)}</span>
-                      <span className="text-indigo-400">{formatBps(inheritanceRequest.heirShares[i])}</span>
+                      <span className="text-accent">{formatBps(inheritanceRequest.heirShares[i])}</span>
                     </div>
                   ))}
                 </div>
@@ -557,7 +538,7 @@ export default function VerifyPage() {
             {subdivisionPlan && (
               <div className="glass-card p-6 rounded-2xl space-y-3">
                 <h2 className="font-semibold text-blue-400">Subdivision Plan</h2>
-                <div className="text-xs text-white/50 space-y-1">
+                <div className="text-xs text-muted space-y-1">
                   <p>Approvals: {String(subdivisionPlan.approvalCount)}</p>
                   <p>Status: <span className={subdivisionPlan.isExecuted ? 'text-green-400' : 'text-yellow-400'}>
                     {subdivisionPlan.isExecuted ? 'Executed' : 'Pending votes'}
@@ -565,15 +546,15 @@ export default function VerifyPage() {
                 </div>
                 {subdivisionPlan.courtOrderCid && (
                   <a href={`${IPFS_GATEWAY}/${subdivisionPlan.courtOrderCid}`} target="_blank" rel="noopener noreferrer"
-                    className="flex items-center gap-1 text-xs text-indigo-400 hover:underline">
+                    className="flex items-center gap-1 text-xs text-accent hover:underline">
                     <ExternalLink size={11} /> Court order
                   </a>
                 )}
                 <div>
-                  <p className="text-xs text-white/40 mb-1.5">Proposed child plots:</p>
+                  <p className="text-xs text-muted mb-1.5">Proposed child plots:</p>
                   <div className="space-y-1">
                     {subdivisionPlan.newLandIds.map((id) => (
-                      <p key={id} className="text-xs font-mono text-indigo-400">{id}</p>
+                      <p key={id} className="text-xs font-mono text-accent">{id}</p>
                     ))}
                   </div>
                 </div>
@@ -585,8 +566,8 @@ export default function VerifyPage() {
 
         {/* Empty state after search */}
         {!isLoading && queriedId && !record && !error && (
-          <div className="glass-card p-10 rounded-2xl text-center text-white/40">
-            No land found for <span className="font-mono text-white/60">{queriedId}</span>
+          <div className="glass-card p-10 rounded-2xl text-center text-muted">
+            No land found for <span className="font-mono text-muted">{queriedId}</span>
           </div>
         )}
 
