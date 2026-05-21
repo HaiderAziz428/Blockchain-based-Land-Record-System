@@ -18,7 +18,6 @@ import {
   LandTypeV9,
   landStatusLabel,
   landTypeLabel,
-  formatBps,
 } from '@/src/utils/contractV9';
 import {
   ADMIN_ROLE,
@@ -393,7 +392,7 @@ function AdminDashboardInner() {
     <button
       onClick={() => setTab(id)}
       className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-        tab === id ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white hover:bg-white/5'
+        tab === id ? 'bg-accent text-white' : 'text-muted hover:text-foreground hover:bg-surface'
       }`}
     >
       {label}
@@ -401,21 +400,22 @@ function AdminDashboardInner() {
   );
 
   return (
-    <main className="min-h-screen bg-brand-dark text-white">
+    <main className="min-h-screen bg-background text-foreground">
       <Navbar />
 
       {txToast && (
         <TxToast txHash={txToast.hash} message={txToast.message} onDismiss={() => setTxToast(null)} />
       )}
 
-      <div className="max-w-6xl mx-auto p-6 space-y-6">
+      <div className="max-w-6xl mx-auto px-6 py-8 space-y-6">
         {/* Header */}
-        <div className="surface p-5 rounded-2xl flex flex-wrap gap-3 items-center justify-between">
+        <div className="flex flex-wrap gap-3 items-end justify-between mb-2">
           <div>
-            <h1 className="text-xl font-bold">Admin Dashboard</h1>
-            <p className="text-white/40 text-xs font-mono mt-1">{address}</p>
+            <span className="text-xs font-mono text-muted tracking-[0.2em] uppercase">Transfer Office</span>
+            <h1 className="font-sans font-semibold text-3xl text-foreground tracking-tight mt-2">Admin Dashboard</h1>
+            <p className="text-muted text-xs font-mono mt-1">{address}</p>
           </div>
-          <div className="flex gap-2 flex-wrap">
+          <div className="flex gap-2 flex-wrap mb-1">
             {isAdmin && <span className="pill border bg-purple-500/10 text-purple-400 border-purple-500/20">ADMIN</span>}
             {isRegistrar && <span className="pill border bg-blue-500/10 text-blue-400 border-blue-500/20">REGISTRAR</span>}
             {isResolver && <span className="pill border bg-orange-500/10 text-orange-400 border-orange-500/20">RESOLVER</span>}
@@ -432,7 +432,7 @@ function AdminDashboardInner() {
           >
             <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
             <span>{notice.message}</span>
-            <button onClick={() => setNotice(null)} className="ml-auto text-white/40 hover:text-white">×</button>
+            <button onClick={() => setNotice(null)} className="ml-auto text-muted hover:text-foreground">×</button>
           </div>
         )}
 
@@ -453,11 +453,11 @@ function AdminDashboardInner() {
             <form onSubmit={handleImport} className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs text-white/50">Land ID</label>
+                  <label className="text-xs text-muted">Land ID</label>
                   <input type="text" value={importLandId} onChange={(e) => setImportLandId(e.target.value)} className="field w-full mt-1" placeholder="DHA-P9-042" required />
                 </div>
                 <div>
-                  <label className="text-xs text-white/50">Land Type</label>
+                  <label className="text-xs text-muted">Land Type</label>
                   <select value={importLandType} onChange={(e) => setImportLandType(e.target.value)} className="field w-full mt-1">
                     <option value="0">Residential</option>
                     <option value="1">Agricultural</option>
@@ -466,18 +466,18 @@ function AdminDashboardInner() {
                 </div>
               </div>
               <div>
-                <label className="text-xs text-white/50">IPFS Hash (metadata CID)</label>
+                <label className="text-xs text-muted">IPFS Hash (metadata CID)</label>
                 <input type="text" value={importIpfsHash} onChange={(e) => setImportIpfsHash(e.target.value)} className="field w-full mt-1" placeholder="bafyrei…" required />
               </div>
               <div>
-                <label className="text-xs text-white/50">Court Order CID (optional)</label>
+                <label className="text-xs text-muted">Court Order CID (optional)</label>
                 <input type="text" value={importCourtCid} onChange={(e) => setImportCourtCid(e.target.value)} className="field w-full mt-1" placeholder="bafyrei…" />
               </div>
 
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs text-white/50">Proposed Owners (must sum to 10,000 bps)</label>
-                  <button type="button" onClick={addImportOwner} className="text-xs text-indigo-400 flex items-center gap-1 hover:text-indigo-300">
+                  <label className="text-xs text-muted">Proposed Owners (must sum to 10,000 bps)</label>
+                  <button type="button" onClick={addImportOwner} className="text-xs text-accent flex items-center gap-1 hover:text-accent">
                     <Plus size={12} /> Add owner
                   </button>
                 </div>
@@ -517,24 +517,24 @@ function AdminDashboardInner() {
         {tab === 'lands' && (
           <div className="space-y-3">
             {isLandsLoading ? (
-              <div className="flex items-center gap-2 text-white/40">
+              <div className="flex items-center gap-2 text-muted">
                 <Loader2 size={16} className="animate-spin" /> Loading…
               </div>
             ) : landRecords.length === 0 ? (
-              <div className="surface p-8 rounded-2xl text-center text-white/40">No lands found.</div>
+              <div className="surface p-8 rounded-2xl text-center text-muted">No lands found.</div>
             ) : (
               landRecords.map((land) => (
                 <div key={land.landId} className="surface p-4 rounded-xl flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <p className="font-mono text-sm text-indigo-400">{land.landId}</p>
-                    <p className="text-xs text-white/40">{landTypeLabel(land.landType as LandTypeV9)}</p>
+                    <p className="font-mono text-sm text-accent">{land.landId}</p>
+                    <p className="text-xs text-muted">{landTypeLabel(land.landType as LandTypeV9)}</p>
                   </div>
                   <div className="flex gap-2 items-center flex-wrap">
                     <span className={`pill border text-xs ${STATUS_TONE[land.status] ?? ''}`}>
                       {landStatusLabel(land.status as LandStatusV9)}
                     </span>
                     {land.ipfsHash && (
-                      <a href={`https://gateway.pinata.cloud/ipfs/${land.ipfsHash}`} target="_blank" rel="noopener noreferrer" className="text-white/30 hover:text-indigo-400">
+                      <a href={`https://gateway.pinata.cloud/ipfs/${land.ipfsHash}`} target="_blank" rel="noopener noreferrer" className="text-muted/60 hover:text-accent">
                         <ExternalLink size={13} />
                       </a>
                     )}
@@ -561,43 +561,43 @@ function AdminDashboardInner() {
             <form onSubmit={handleInheritance} className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs text-white/50">Land ID</label>
+                  <label className="text-xs text-muted">Land ID</label>
                   <input type="text" value={inhLandId} onChange={(e) => setInhLandId(e.target.value)} className="field w-full mt-1" required />
                 </div>
                 <div>
                   <div className="flex items-center justify-between">
-                    <label className="text-xs text-white/50">Deceased Holder Address</label>
-                    <button type="button" onClick={fetchDeceasedBalance} className="text-xs text-indigo-400 hover:text-indigo-300">
+                    <label className="text-xs text-muted">Deceased Holder Address</label>
+                    <button type="button" onClick={fetchDeceasedBalance} className="text-xs text-accent hover:text-accent">
                       Fetch share →
                     </button>
                   </div>
                   <input type="text" value={inhDeceased} onChange={(e) => { setInhDeceased(e.target.value); setDeceasedBalance(null); }} className="field w-full mt-1 font-mono text-xs" placeholder="0x…" required />
                   {deceasedBalance && (
-                    <p className="text-xs mt-1 text-indigo-300">Share: <span className="font-mono">{deceasedBalance}</span> — heirs must sum to this</p>
+                    <p className="text-xs mt-1 text-accent">Share: <span className="font-mono">{deceasedBalance}</span> — heirs must sum to this</p>
                   )}
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs text-white/50">Court Order CID <span className="text-red-400">*</span></label>
+                  <label className="text-xs text-muted">Court Order CID <span className="text-red-400">*</span></label>
                   <input type="text" value={inhCourtCid} onChange={(e) => setInhCourtCid(e.target.value)} className="field w-full mt-1" placeholder="IPFS CID or 'N/A' for testing" required />
                 </div>
                 <div>
-                  <label className="text-xs text-white/50">Appeal ID (0 if none)</label>
+                  <label className="text-xs text-muted">Appeal ID (0 if none)</label>
                   <input type="number" value={inhAppealId} onChange={(e) => setInhAppealId(e.target.value)} className="field w-full mt-1" min="0" />
                 </div>
               </div>
 
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs text-white/50">Heirs (bps must equal deceased's share)</label>
-                  <button type="button" onClick={addHeir} className="text-xs text-indigo-400 flex items-center gap-1 hover:text-indigo-300">
+                  <label className="text-xs text-muted">Heirs (bps must equal deceased&apos;s share)</label>
+                  <button type="button" onClick={addHeir} className="text-xs text-accent flex items-center gap-1 hover:text-accent">
                     <Plus size={12} /> Add heir
                   </button>
                 </div>
                 <div className="grid grid-cols-[1fr_96px_24px] gap-2 mb-1 px-1">
-                  <span className="text-xs text-white/30">Wallet address (0x…)</span>
-                  <span className="text-xs text-white/30">Share (bps)</span>
+                  <span className="text-xs text-muted/60">Wallet address (0x…)</span>
+                  <span className="text-xs text-muted/60">Share (bps)</span>
                   <span />
                 </div>
                 <div className="space-y-2">
@@ -613,7 +613,7 @@ function AdminDashboardInner() {
                     </div>
                   ))}
                 </div>
-                <p className="text-xs mt-1 text-white/40">
+                <p className="text-xs mt-1 text-muted">
                   Total heir shares: {inhHeirs.reduce((s, h) => s + (parseInt(h.shareBps) || 0), 0)} bps
                 </p>
               </div>
@@ -639,11 +639,11 @@ function AdminDashboardInner() {
             <form onSubmit={handleResolve} className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs text-white/50">Land ID</label>
+                  <label className="text-xs text-muted">Land ID</label>
                   <input type="text" value={dispLandId} onChange={(e) => setDispLandId(e.target.value)} className="field w-full mt-1" required />
                 </div>
                 <div>
-                  <label className="text-xs text-white/50">Dispute type</label>
+                  <label className="text-xs text-muted">Dispute type</label>
                   <select value={dispType} onChange={(e) => setDispType(e.target.value as 'inheritance' | 'import')} className="field w-full mt-1">
                     <option value="inheritance">Inheritance dispute</option>
                     <option value="import">Import dispute</option>
@@ -651,17 +651,17 @@ function AdminDashboardInner() {
                 </div>
               </div>
               <div>
-                <label className="text-xs text-white/50">Updated Court Order CID</label>
+                <label className="text-xs text-muted">Updated Court Order CID</label>
                 <input type="text" value={dispCourtCid} onChange={(e) => setDispCourtCid(e.target.value)} className="field w-full mt-1" />
               </div>
               {dispType === 'inheritance' && (
                 <>
                   <div>
-                    <label className="text-xs text-white/50">Legal Resolution CID</label>
+                    <label className="text-xs text-muted">Legal Resolution CID</label>
                     <input type="text" value={dispResCid} onChange={(e) => setDispResCid(e.target.value)} className="field w-full mt-1" />
                   </div>
                   <div>
-                    <label className="text-xs text-white/50">Override reason</label>
+                    <label className="text-xs text-muted">Override reason</label>
                     <input type="text" value={dispReason} onChange={(e) => setDispReason(e.target.value)} className="field w-full mt-1" />
                   </div>
                 </>
@@ -692,30 +692,30 @@ function AdminDashboardInner() {
             <form onSubmit={handleSubdivision} className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs text-white/50">Parent Land ID</label>
+                  <label className="text-xs text-muted">Parent Land ID</label>
                   <input type="text" value={subdivParent} onChange={(e) => setSubdivParent(e.target.value)} className="field w-full mt-1" required />
                 </div>
                 <div>
-                  <label className="text-xs text-white/50">Court Order CID</label>
+                  <label className="text-xs text-muted">Court Order CID</label>
                   <input type="text" value={subdivCourtCid} onChange={(e) => setSubdivCourtCid(e.target.value)} className="field w-full mt-1" />
                 </div>
               </div>
               <div>
-                <label className="text-xs text-white/50">Survey Metadata CID</label>
+                <label className="text-xs text-muted">Survey Metadata CID</label>
                 <input type="text" value={subdivSurveyCid} onChange={(e) => setSubdivSurveyCid(e.target.value)} className="field w-full mt-1" />
               </div>
 
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs text-white/50">Child parcels</label>
-                  <button type="button" onClick={addChild} className="text-xs text-indigo-400 flex items-center gap-1 hover:text-indigo-300">
+                  <label className="text-xs text-muted">Child parcels</label>
+                  <button type="button" onClick={addChild} className="text-xs text-accent flex items-center gap-1 hover:text-accent">
                     <Plus size={12} /> Add child
                   </button>
                 </div>
                 {children.map((child, ci) => (
                   <div key={ci} className="surface p-4 rounded-xl space-y-3 mb-3">
                     <div className="flex items-center justify-between">
-                      <p className="text-xs text-white/50">Child {ci + 1}</p>
+                      <p className="text-xs text-muted">Child {ci + 1}</p>
                       {children.length > 1 && (
                         <button type="button" onClick={() => removeChild(ci)} className="text-red-400">
                           <Trash2 size={13} />
@@ -728,8 +728,8 @@ function AdminDashboardInner() {
                     </div>
                     <div>
                       <div className="flex items-center justify-between mb-1">
-                        <p className="text-xs text-white/40">Owners (sum to 10,000)</p>
-                        <button type="button" onClick={() => addChildOwner(ci)} className="text-xs text-indigo-400 flex items-center gap-1">
+                        <p className="text-xs text-muted">Owners (sum to 10,000)</p>
+                        <button type="button" onClick={() => addChildOwner(ci)} className="text-xs text-accent flex items-center gap-1">
                           <Plus size={11} /> Owner
                         </button>
                       </div>
@@ -772,7 +772,7 @@ function AdminDashboardInner() {
             <h2 className="font-semibold">Role Management (ADMIN only)</h2>
             <div className="space-y-3">
               <div>
-                <label className="text-xs text-white/50">Role</label>
+                <label className="text-xs text-muted">Role</label>
                 <select value={roleToManage} onChange={(e) => setRoleToManage(e.target.value as `0x${string}`)} className="field w-full mt-1">
                   <option value={REGISTRAR_ROLE}>REGISTRAR_ROLE</option>
                   <option value={RESOLVER_ROLE}>RESOLVER_ROLE</option>
@@ -781,7 +781,7 @@ function AdminDashboardInner() {
                 </select>
               </div>
               <div>
-                <label className="text-xs text-white/50">Target address</label>
+                <label className="text-xs text-muted">Target address</label>
                 <input type="text" value={roleTarget} onChange={(e) => setRoleTarget(e.target.value)} className="field w-full mt-1 font-mono text-xs" placeholder="0x…" />
               </div>
               <div className="flex gap-3">

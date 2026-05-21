@@ -5,11 +5,13 @@ import {
   RainbowKitProvider,
   getDefaultConfig,
   darkTheme,
-  Theme,
+  lightTheme,
+  type Theme,
 } from '@rainbow-me/rainbowkit';
 import { sepolia } from 'wagmi/chains';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WagmiProvider, http, fallback } from 'wagmi';
+import { ThemeProvider, useTheme } from 'next-themes';
 import '@rainbow-me/rainbowkit/styles.css';
 
 const projectId = process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || 'YOUR_PROJECT_ID';
@@ -18,33 +20,55 @@ const config = getDefaultConfig({
   appName: 'LandLedger',
   projectId,
   chains: [sepolia],
-  ssr: true, // 🚀 Enables perfect Server-Side Rendering & stops hydration errors
+  ssr: true,
   transports: {
     [sepolia.id]: fallback([
-        http('https://ethereum-sepolia.publicnode.com'),
-        http('https://rpc2.sepolia.org'),
-        http() // Default fallback
+      http('https://ethereum-sepolia.publicnode.com'),
+      http('https://rpc2.sepolia.org'),
+      http(),
     ]),
   },
 });
 
-const myTheme: Theme = darkTheme({
-  accentColor: '#4f46e5',
-  accentColorForeground: '#ffffff',
-  borderRadius: 'medium',
-  fontStack: 'system',
-  overlayBlur: 'small',
-});
+// Must live *inside* ThemeProvider so useTheme() resolves.
+// The mounted guard ensures server and first-client render both use darkTheme,
+// preventing the SSR/client CSS-variable mismatch hydration error.
+function RainbowKitWithTheme({ children }: { children: React.ReactNode }) {
+  const { resolvedTheme } = useTheme();
+  const [mounted, setMounted] = React.useState(false);
+  React.useEffect(() => { setMounted(true); }, []);
+
+  const theme: Theme =
+    mounted && resolvedTheme === 'light'
+      ? lightTheme({
+          accentColor: '#15803d',
+          accentColorForeground: '#ffffff',
+          borderRadius: 'medium',
+          fontStack: 'system',
+          overlayBlur: 'small',
+        })
+      : darkTheme({
+          accentColor: '#16a34a',
+          accentColorForeground: '#ffffff',
+          borderRadius: 'medium',
+          fontStack: 'system',
+          overlayBlur: 'small',
+        });
+
+  return <RainbowKitProvider theme={theme}>{children}</RainbowKitProvider>;
+}
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = React.useState(() => new QueryClient());
   return (
-    <WagmiProvider config={config}>
-      <QueryClientProvider client={queryClient}>
-        <RainbowKitProvider theme={myTheme}>
-          {children}
-        </RainbowKitProvider>
-      </QueryClientProvider>
-    </WagmiProvider>
+    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
+      <WagmiProvider config={config}>
+        <QueryClientProvider client={queryClient}>
+          <RainbowKitWithTheme>
+            {children}
+          </RainbowKitWithTheme>
+        </QueryClientProvider>
+      </WagmiProvider>
+    </ThemeProvider>
   );
 }

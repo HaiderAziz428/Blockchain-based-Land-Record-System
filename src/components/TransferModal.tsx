@@ -10,23 +10,11 @@ interface TransferModalProps {
   isOpen: boolean;
   onClose: () => void;
   landId: string;
-  currentShareBps: number; // caller's current bps balance
+  currentShareBps: number;
   onSuccess: (txHash: string) => void;
 }
 
-/**
- * Transfer a share (bps) of a land parcel to another wallet.
- * salePrice is always 0 — direct transfers are gifts/family moves only.
- * Paid sales must go through the marketplace (listShareForSale → buyShare).
- * Calls: transferShare(landId, recipient, shareBps, 0)
- */
-export default function TransferModal({
-  isOpen,
-  onClose,
-  landId,
-  currentShareBps,
-  onSuccess,
-}: TransferModalProps) {
+export default function TransferModal({ isOpen, onClose, landId, currentShareBps, onSuccess }: TransferModalProps) {
   const [recipient, setRecipient] = useState('');
   const [bpsToTransfer, setBpsToTransfer] = useState('');
   const [validationError, setValidationError] = useState('');
@@ -47,9 +35,7 @@ export default function TransferModal({
     }
     const bps = parseInt(bpsToTransfer, 10);
     if (!bps || bps <= 0 || bps > currentShareBps) {
-      setValidationError(
-        `Share bps must be between 1 and ${currentShareBps} (your current balance).`
-      );
+      setValidationError(`Share bps must be between 1 and ${currentShareBps} (your current balance).`);
       return;
     }
 
@@ -58,7 +44,6 @@ export default function TransferModal({
     hasProcessedRef.current = false;
 
     try {
-      // Check recipient is registered
       const profile = (await publicClient.readContract({
         address: CONTRACT_V9_ADDRESS,
         abi: CONTRACT_V9_ABI,
@@ -67,9 +52,7 @@ export default function TransferModal({
       })) as { name: string; cnic: string; isRegistered: boolean };
 
       if (!profile.isRegistered) {
-        setValidationError(
-          'Recipient is not registered in the Land Registry. They must register via the User Portal first.'
-        );
+        setValidationError('Recipient is not registered in the Land Registry. They must register via the User Portal first.');
         setIsValidating(false);
         return;
       }
@@ -92,51 +75,52 @@ export default function TransferModal({
       onClose();
       onSuccess(hash);
     }
-  }, [isSuccess, hash]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSuccess, hash]); // onClose/onSuccess intentionally omitted — stable parent callbacks
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#0a0b1e]/80 backdrop-blur-md p-4">
-      <div className="glass-card p-8 rounded-3xl w-full max-w-md relative animate-[fadeUp_0.3s_ease]">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-background/80 backdrop-blur-md p-4">
+      <div className="glass-card p-8 rounded-2xl w-full max-w-md relative animate-[fadeUp_0.3s_ease]">
         <button
           onClick={onClose}
           disabled={isPending || isConfirming}
-          className="absolute top-4 right-4 text-white/50 hover:text-white disabled:opacity-30"
+          className="absolute top-4 right-4 text-muted hover:text-foreground transition-colors disabled:opacity-30"
         >
-          <X size={20} />
+          <X size={18} />
         </button>
 
-        <div className="flex justify-center mb-4">
-          <div className="bg-indigo-500/20 p-3 rounded-2xl">
-            <ArrowRightLeft size={32} className="text-indigo-400" />
+        <div className="flex justify-center mb-5">
+          <div className="bg-accent/15 p-3 rounded-xl">
+            <ArrowRightLeft size={28} className="text-accent" />
           </div>
         </div>
 
-        <h2 className="text-2xl font-bold text-white text-center mb-1">Transfer Share</h2>
-        <p className="text-sm text-white/50 text-center mb-1 font-mono">{landId}</p>
-        <p className="text-xs text-white/30 text-center mb-3">
+        <h2 className="text-xl font-semibold text-foreground text-center mb-1">Transfer Share</h2>
+        <p className="text-sm text-muted text-center mb-0.5 font-mono">{landId}</p>
+        <p className="text-xs text-muted-foreground text-center mb-3">
           Your share: {formatBps(currentShareBps)} ({currentShareBps} bps)
         </p>
-        <p className="text-xs text-yellow-400/80 text-center mb-5 bg-yellow-500/10 border border-yellow-500/20 rounded-lg px-3 py-2">
+        <p className="text-xs text-warning text-center mb-5 bg-warning/10 border border-warning/20 rounded-lg px-3 py-2">
           For gifts &amp; family transfers only. To sell for ETH, use the Marketplace.
         </p>
 
         <form onSubmit={handleTransfer} className="space-y-4">
           <div>
-            <label className="text-xs text-white/60 mb-1 block">Recipient Wallet Address</label>
+            <label className="text-xs text-muted mb-1.5 block">Recipient Wallet Address</label>
             <input
               type="text"
               value={recipient}
               onChange={(e) => { setRecipient(e.target.value); setValidationError(''); }}
-              className="w-full bg-black/30 border border-white/10 p-4 rounded-xl text-white font-mono text-sm outline-none focus:border-indigo-500"
+              className="field font-mono"
               placeholder="0x..."
               disabled={isPending || isConfirming}
             />
           </div>
 
           <div>
-            <label className="text-xs text-white/60 mb-1 block">
+            <label className="text-xs text-muted mb-1.5 block">
               Share to transfer (bps, max {currentShareBps})
             </label>
             <input
@@ -145,54 +129,49 @@ export default function TransferModal({
               max={currentShareBps}
               value={bpsToTransfer}
               onChange={(e) => setBpsToTransfer(e.target.value)}
-              className="w-full bg-black/30 border border-white/10 p-4 rounded-xl text-white font-mono text-sm outline-none focus:border-indigo-500"
+              className="field font-mono"
               placeholder={`e.g. ${currentShareBps}`}
               disabled={isPending || isConfirming}
               required
             />
             {bpsToTransfer && (
-              <p className="text-xs text-white/40 mt-1">
+              <p className="text-xs text-muted mt-1">
                 = {formatBps(parseInt(bpsToTransfer) || 0)} of this land
               </p>
             )}
           </div>
 
           {validationError && (
-            <div className="text-red-400 text-xs p-3 bg-red-500/10 rounded-lg border border-red-500/20">
+            <div className="text-danger text-xs p-3 bg-danger/10 rounded-lg border border-danger/20">
               {validationError}
             </div>
           )}
-
           {writeError && (
-            <div className="text-red-400 text-xs p-3 bg-red-500/10 rounded-lg border border-red-500/20">
+            <div className="text-danger text-xs p-3 bg-danger/10 rounded-lg border border-danger/20">
               {writeError.message.split('\n')[0]}
             </div>
           )}
 
           {(isValidating || isPending || isConfirming) && (
-            <div className="text-center text-sm text-indigo-400 flex items-center justify-center gap-2">
-              <Loader2 size={16} className="animate-spin" />
-              {isValidating
-                ? 'Validating recipient…'
-                : isPending
-                ? 'Confirm in wallet…'
-                : 'Confirming on-chain…'}
+            <div className="text-center text-sm text-accent flex items-center justify-center gap-2">
+              <Loader2 size={15} className="animate-spin" />
+              {isValidating ? 'Validating recipient…' : isPending ? 'Confirm in wallet…' : 'Confirming on-chain…'}
             </div>
           )}
 
-          <div className="flex gap-3 mt-6">
+          <div className="flex gap-3 mt-2">
             <button
               type="button"
               onClick={onClose}
               disabled={isPending || isConfirming}
-              className="flex-1 py-3 text-sm font-semibold text-gray-400 hover:text-white transition-colors disabled:opacity-50"
+              className="btn-ghost flex-1 py-2.5 disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={isPending || isConfirming || isValidating || !recipient || !bpsToTransfer}
-              className="flex-[2] bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition-all disabled:opacity-50"
+              className="btn-primary flex-[2] py-2.5 rounded-lg disabled:opacity-50"
             >
               Transfer Share
             </button>

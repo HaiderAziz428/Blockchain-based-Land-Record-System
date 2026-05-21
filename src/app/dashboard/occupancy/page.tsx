@@ -6,13 +6,6 @@ import Navbar from "@/src/components/Navbar";
 import { OccupancyAgreementCard, type OccupancyAgreement } from "@/src/components/occupancy/OccupancyAgreementCard";
 import { CONTRACT_V9_ABI, CONTRACT_V9_ADDRESS } from "@/src/utils/contractV9";
 
-/**
- * Occupancy & use-rights module landing.
- *
- * Lookup-by-landId UX for the v8/v9 occupancy ledger. A full
- * "all occupancy I'm involved in" cross-land view requires the
- * indexer (see docs/backend/01) and is left for follow-up.
- */
 export default function OccupancyLanding() {
   const { isConnected, address } = useAccount();
   const [mounted, setMounted] = useState(false);
@@ -22,13 +15,14 @@ export default function OccupancyLanding() {
   if (!mounted) return null;
 
   return (
-    <main className="min-h-screen bg-brand-dark text-white">
+    <main className="min-h-screen bg-background text-foreground">
       <Navbar />
 
-      <div className="max-w-5xl mx-auto p-6 space-y-6">
+      <div className="max-w-5xl mx-auto px-6 py-8 space-y-6">
         <header className="space-y-1">
-          <h1 className="text-2xl font-semibold">Occupancy & use-rights</h1>
-          <p className="text-white/60 text-sm">
+          <span className="text-xs font-semibold font-sans text-muted tracking-[0.2em] uppercase">Use-Rights Module</span>
+          <h1 className="font-sans text-2xl font-semibold text-foreground tracking-tight mt-1">Occupancy & Use-Rights</h1>
+          <p className="text-muted text-sm">
             Time-bounded rights of use — leases, tenancies, easements, farming rights.
             Occupancy is a separate ledger from ownership; granting or revoking it
             does NOT move the NFT and does NOT change ownership shares.
@@ -38,15 +32,15 @@ export default function OccupancyLanding() {
         <Explainer />
 
         {!isConnected ? (
-          <div className="glass-card p-8 text-center">
-            <p className="text-white/70">Connect your wallet to manage occupancy agreements.</p>
+          <div className="glass-card rounded-2xl p-8 text-center">
+            <p className="text-muted">Connect your wallet to manage occupancy agreements.</p>
           </div>
         ) : (
-          <div className="glass-card p-6">
-            <h2 className="text-sm font-semibold mb-3">View agreements for a land</h2>
+          <div className="surface rounded-2xl p-6">
+            <h2 className="text-sm font-semibold text-foreground mb-3">View agreements for a land</h2>
             <div className="flex flex-col sm:flex-row gap-3">
               <input
-                className="field flex-1 px-4 py-2 bg-black/30 border border-white/10 rounded-lg text-white"
+                className="field flex-1"
                 placeholder="Land ID (e.g. DHA_PHASE_9:R-2/417)"
                 value={landId}
                 onChange={(e) => setLandId(e.target.value)}
@@ -73,28 +67,28 @@ export default function OccupancyLanding() {
 
 function Explainer() {
   return (
-    <div className="surface rounded-2xl p-6 border border-white/10">
-      <h2 className="text-sm font-semibold text-white mb-3">
+    <div className="surface rounded-2xl p-6">
+      <h2 className="text-sm font-semibold text-foreground mb-3">
         Quick reminder — three independent concepts
       </h2>
       <div className="grid sm:grid-cols-3 gap-3 text-sm">
-        <div className="rounded-lg p-3 bg-black/30 border border-white/10">
-          <div className="text-xs uppercase tracking-wider text-indigo-300 mb-1">Ownership</div>
-          <p className="text-white/70">
+        <div className="rounded-lg p-3 bg-surface-elevated border border-border">
+          <div className="text-xs uppercase tracking-wider text-accent mb-1">Ownership</div>
+          <p className="text-muted">
             What fraction of the legal title you hold. Lives in the share ledger
             (basis points). Changed by transfer, sale, inheritance.
           </p>
         </div>
-        <div className="rounded-lg p-3 bg-black/30 border border-white/10">
-          <div className="text-xs uppercase tracking-wider text-green-300 mb-1">Occupancy</div>
-          <p className="text-white/70">
+        <div className="rounded-lg p-3 bg-surface-elevated border border-border">
+          <div className="text-xs uppercase tracking-wider text-success mb-1">Occupancy</div>
+          <p className="text-muted">
             A time-bounded right to USE the parcel. Lives in a separate ledger.
             Never moves the NFT and never changes shares.
           </p>
         </div>
-        <div className="rounded-lg p-3 bg-black/30 border border-white/10">
-          <div className="text-xs uppercase tracking-wider text-yellow-300 mb-1">Subdivision</div>
-          <p className="text-white/70">
+        <div className="rounded-lg p-3 bg-surface-elevated border border-border">
+          <div className="text-xs uppercase tracking-wider text-warning mb-1">Subdivision</div>
+          <p className="text-muted">
             Court-anchored split of one parcel into many. Burns the NFT and mints
             children. Use the Subdivision tab on the property detail page.
           </p>
@@ -126,13 +120,13 @@ function OccupancyList({ landId, viewer }: { landId: string; viewer: `0x${string
   return (
     <>
       <section>
-        <h2 className="text-sm font-semibold text-white mb-3">
-          Active agreements <span className="text-white/40">({aLoading ? "…" : activeList.length})</span>
+        <h2 className="text-sm font-semibold text-foreground mb-3">
+          Active agreements <span className="text-muted">({aLoading ? "…" : activeList.length})</span>
         </h2>
         {aLoading ? (
           <Skeleton />
         ) : activeList.length === 0 ? (
-          <div className="text-white/50 text-sm">No active agreements on this land.</div>
+          <div className="text-muted text-sm">No active agreements on this land.</div>
         ) : (
           <div className="grid gap-3">
             {activeList.map((a, i) => (
@@ -143,13 +137,13 @@ function OccupancyList({ landId, viewer }: { landId: string; viewer: `0x${string
       </section>
 
       <section>
-        <h2 className="text-sm font-semibold text-white mb-3">
-          History — revoked + expired <span className="text-white/40">({hLoading ? "…" : history.length})</span>
+        <h2 className="text-sm font-semibold text-foreground mb-3">
+          History — revoked + expired <span className="text-muted">({hLoading ? "…" : history.length})</span>
         </h2>
         {hLoading ? (
           <Skeleton />
         ) : history.length === 0 ? (
-          <div className="text-white/50 text-sm">No revoked or expired agreements yet.</div>
+          <div className="text-muted text-sm">No revoked or expired agreements yet.</div>
         ) : (
           <div className="grid gap-3">
             {history.map((a, i) => (
@@ -166,7 +160,7 @@ function Skeleton() {
   return (
     <div className="grid gap-3">
       {[0, 1].map((i) => (
-        <div key={i} className="surface rounded-2xl p-5 border border-white/10 animate-pulse h-32" />
+        <div key={i} className="surface rounded-2xl p-5 animate-pulse h-32" />
       ))}
     </div>
   );

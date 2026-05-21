@@ -99,7 +99,8 @@ function RegisterInlineForm({ onSuccess }: { onSuccess: () => void }) {
   const { writeContract, data: hash, isPending, error: writeError } = useWriteContract();
   const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash });
 
-  useEffect(() => { if (isSuccess) onSuccess(); }, [isSuccess]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (isSuccess) onSuccess(); }, [isSuccess]); // onSuccess is a stable parent callback
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -183,7 +184,8 @@ export default function UserDashboard() {
       setTxToast({ hash: withdrawHash, message: 'Proceeds withdrawn!' });
       refetchProceeds();
     }
-  }, [isWithdrawSuccess, withdrawHash]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isWithdrawSuccess, withdrawHash]); // refetchProceeds is stable (Wagmi hook return)
 
   // ── Verify & Mint ─────────────────────────────────────────────────────────
   const [verifyingLandId, setVerifyingLandId] = useState<string | null>(null);
@@ -221,7 +223,8 @@ export default function UserDashboard() {
       setConfirmingLandId(null);
       loadLands();
     }
-  }, [isConfirmSuccess, confirmHash]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isConfirmSuccess, confirmHash]); // loadLands is a stable local function
 
   // ── Cancel listing ────────────────────────────────────────────────────────
   const [cancelingId, setCancelingId] = useState<string | null>(null);
@@ -236,7 +239,8 @@ export default function UserDashboard() {
       setCancelingId(null);
       loadLands();
     }
-  }, [isCancelSuccess, cancelHash]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCancelSuccess, cancelHash]); // loadLands is a stable local function
 
   // ── Succession voting ─────────────────────────────────────────────────────
   const [successionLandId, setSuccessionLandId] = useState('');
@@ -534,7 +538,8 @@ export default function UserDashboard() {
 
   useEffect(() => {
     if (mounted && profile?.isRegistered && profile?.cnic) loadLands();
-  }, [mounted, profile?.isRegistered, profile?.cnic, address]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mounted, profile?.isRegistered, profile?.cnic, address]); // loadLands is a stable local function
 
   // ─── Tab button helper ────────────────────────────────────────────────────
   const tabBtn = (t: Tab, label: string, Icon: React.ElementType) => (
@@ -542,8 +547,8 @@ export default function UserDashboard() {
       onClick={() => setTab(t)}
       className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
         tab === t
-          ? 'bg-indigo-600 text-white'
-          : 'bg-white/[0.04] text-white/50 hover:text-white hover:bg-white/[0.08]'
+          ? 'bg-accent text-white'
+          : 'bg-surface text-muted hover:text-foreground hover:bg-surface-elevated'
       }`}
     >
       <Icon size={14} /> {label}
@@ -554,20 +559,21 @@ export default function UserDashboard() {
   if (!mounted) return null;
 
   return (
-    <main className="min-h-screen bg-brand-dark text-white">
+    <main className="min-h-screen bg-background text-foreground">
       <Navbar />
 
       {txToast && (
         <TxToast txHash={txToast.hash} message={txToast.message} onDismiss={() => setTxToast(null)} />
       )}
 
-      <div className="max-w-5xl mx-auto p-6 space-y-6">
+      <div className="max-w-5xl mx-auto px-6 py-8 space-y-6">
 
         {/* ── Header ──────────────────────────────────────────────────────── */}
-        <div>
-          <h1 className="text-2xl font-bold">User Portal</h1>
+        <div className="mb-2">
+          <span className="text-xs font-mono text-muted tracking-[0.2em] uppercase">Landowner Portal</span>
+          <h1 className="font-sans font-semibold text-3xl text-foreground tracking-tight mt-2">User Dashboard</h1>
           {profile?.isRegistered && (
-            <p className="text-white/40 text-sm mt-1 font-mono">
+            <p className="text-muted text-sm mt-1 font-mono">
               {profile.name} · CNIC {profile.cnic}
             </p>
           )}
@@ -575,7 +581,7 @@ export default function UserDashboard() {
 
         {/* ── Not connected ────────────────────────────────────────────────── */}
         {!address && (
-          <div className="glass-card p-8 rounded-2xl text-center text-white/40">
+          <div className="glass-card p-8 rounded-2xl text-center text-muted">
             Connect your wallet to access the User Portal.
           </div>
         )}
@@ -583,7 +589,7 @@ export default function UserDashboard() {
         {/* ── Connected but not registered ─────────────────────────────────── */}
         {address && !isProfileLoading && !profile?.isRegistered && (
           <div className="glass-card p-8 rounded-2xl text-center space-y-4">
-            <p className="text-white/60 text-sm">Register your wallet to get started.</p>
+            <p className="text-muted text-sm">Register your wallet to get started.</p>
             <RegisterInlineForm onSuccess={() => refetchProfile()} />
           </div>
         )}
@@ -599,7 +605,7 @@ export default function UserDashboard() {
               }`}>
                 <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
                 <span>{notice.message}</span>
-                <button onClick={() => setNotice(null)} className="ml-auto text-white/40 hover:text-white">×</button>
+                <button onClick={() => setNotice(null)} className="ml-auto text-muted hover:text-foreground">×</button>
               </div>
             )}
 
@@ -616,11 +622,11 @@ export default function UserDashboard() {
             {tab === 'lands' && (
               <section className="space-y-4">
                 {isLoadingLands ? (
-                  <div className="flex items-center gap-2 text-white/40">
+                  <div className="flex items-center gap-2 text-muted">
                     <Loader2 size={18} className="animate-spin" /> Loading your lands…
                   </div>
                 ) : lands.length === 0 ? (
-                  <div className="surface p-8 rounded-2xl text-center text-white/40">
+                  <div className="surface p-8 rounded-2xl text-center text-muted">
                     No land records found for your CNIC in the govt registry.
                   </div>
                 ) : (
@@ -628,12 +634,12 @@ export default function UserDashboard() {
                     <div key={land.landId} className="surface p-5 rounded-2xl space-y-3">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
-                          <p className="font-mono text-sm text-indigo-400">{land.landId}</p>
-                          <p className="text-xs text-white/40 mt-0.5">
+                          <p className="font-mono text-sm text-accent">{land.landId}</p>
+                          <p className="text-xs text-muted mt-0.5">
                             {land.isOnChain ? landTypeLabel(land.landType as LandTypeV9) : (land.location ?? 'Not on-chain yet')}
                           </p>
                           {land.areaSqYards && (
-                            <p className="text-xs text-white/30">{land.areaSqYards} sq yards</p>
+                            <p className="text-xs text-muted/60">{land.areaSqYards} sq yards</p>
                           )}
                         </div>
                         <div className="flex flex-wrap gap-2 items-center">
@@ -643,7 +649,7 @@ export default function UserDashboard() {
                                 {landStatusLabel(land.status as LandStatusV9)}
                               </span>
                               {land.shareBps > 0 && (
-                                <span className="pill border text-xs bg-indigo-500/10 text-indigo-400 border-indigo-500/20">
+                                <span className="pill border text-xs bg-accent/10 text-accent border-accent/20">
                                   {formatBps(land.shareBps)} ({land.shareBps} bps)
                                 </span>
                               )}
@@ -663,7 +669,7 @@ export default function UserDashboard() {
 
                       {land.isOnChain && land.ipfsHash && (
                         <a href={`${IPFS_GATEWAY}/${land.ipfsHash}`} target="_blank" rel="noopener noreferrer"
-                          className="flex items-center gap-1 text-xs text-white/40 hover:text-indigo-400">
+                          className="flex items-center gap-1 text-xs text-muted hover:text-accent">
                           <ExternalLink size={11} /> IPFS metadata
                         </a>
                       )}
@@ -760,9 +766,9 @@ export default function UserDashboard() {
             {tab === 'succession' && (
               <section className="space-y-5">
                 <div className="glass-card p-5 rounded-2xl space-y-4">
-                  <h2 className="font-semibold text-white">Check Succession Plan</h2>
-                  <p className="text-xs text-white/40">
-                    Enter the <span className="text-white/60">deceased owner&apos;s land ID</span> to view and vote on the succession plan.
+                  <h2 className="font-semibold text-foreground">Check Succession Plan</h2>
+                  <p className="text-xs text-muted">
+                    Enter the <span className="text-muted">deceased owner&apos;s land ID</span> to view and vote on the succession plan.
                   </p>
                   <div className="flex gap-2">
                     <input
@@ -789,22 +795,22 @@ export default function UserDashboard() {
                     <div className="space-y-3 pt-2">
                       <div className="surface p-4 rounded-xl space-y-2 text-sm">
                         <div className="flex justify-between">
-                          <span className="text-white/40">Status</span>
+                          <span className="text-muted">Status</span>
                           <span className={successionPlan.isExecuted ? 'text-green-400' : 'text-yellow-400'}>
                             {successionPlan.isExecuted ? 'Executed' : 'Pending Votes'}
                           </span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-white/40">Approvals</span>
+                          <span className="text-muted">Approvals</span>
                           <span className="font-mono">{String(successionPlan.approvalCount)} / {successionPlan.heirs?.length ?? 0}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-white/40">Heirs</span>
+                          <span className="text-muted">Heirs</span>
                           <span className="font-mono">{successionPlan.heirs?.length ?? 0}</span>
                         </div>
                         {successionPlan.votingDeadline > BigInt(0) && (
                           <div className="flex justify-between">
-                            <span className="text-white/40">Deadline</span>
+                            <span className="text-muted">Deadline</span>
                             <span className="text-xs">{new Date(Number(successionPlan.votingDeadline) * 1000).toLocaleDateString()}</span>
                           </div>
                         )}
@@ -871,8 +877,8 @@ export default function UserDashboard() {
             {tab === 'subdivision' && (
               <section className="space-y-5">
                 <div className="glass-card p-5 rounded-2xl space-y-4">
-                  <h2 className="font-semibold text-white">Check Subdivision Plan</h2>
-                  <p className="text-xs text-white/40">
+                  <h2 className="font-semibold text-foreground">Check Subdivision Plan</h2>
+                  <p className="text-xs text-muted">
                     Enter a land ID to view and vote on a pending subdivision.
                   </p>
                   <div className="flex gap-2">
@@ -900,23 +906,23 @@ export default function UserDashboard() {
                     <div className="space-y-3 pt-2">
                       <div className="surface p-4 rounded-xl space-y-2 text-sm">
                         <div className="flex justify-between">
-                          <span className="text-white/40">Status</span>
+                          <span className="text-muted">Status</span>
                           <span className={subdivPlan.isExecuted ? 'text-green-400' : 'text-yellow-400'}>
                             {subdivPlan.isExecuted ? 'Executed' : 'Pending Votes'}
                           </span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-white/40">Approvals</span>
+                          <span className="text-muted">Approvals</span>
                           <span className="font-mono">{String(subdivPlan.approvalCount)}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-white/40">New plots</span>
+                          <span className="text-muted">New plots</span>
                           <span className="font-mono">{subdivPlan.newLandIds.length}</span>
                         </div>
                         {subdivPlan.newLandIds.length > 0 && (
                           <div className="pt-1 space-y-1">
                             {subdivPlan.newLandIds.map((id) => (
-                              <p key={id} className="font-mono text-xs text-indigo-400">{id}</p>
+                              <p key={id} className="font-mono text-xs text-accent">{id}</p>
                             ))}
                           </div>
                         )}
@@ -974,7 +980,7 @@ export default function UserDashboard() {
             {tab === 'occupancy' && (
               <section className="space-y-5">
                 <div className="glass-card p-5 rounded-2xl space-y-4">
-                  <h2 className="font-semibold text-white">Occupancy Agreements</h2>
+                  <h2 className="font-semibold text-foreground">Occupancy Agreements</h2>
                   <div className="flex gap-2">
                     <input
                       type="text"
@@ -1001,22 +1007,22 @@ export default function UserDashboard() {
                       {occupancyAgreements.map((a, i) => (
                         <div key={i} className="surface p-4 rounded-xl text-sm space-y-2">
                           <div className="flex justify-between">
-                            <span className="text-white/40">Category</span>
+                            <span className="text-muted">Category</span>
                             <span>{occupancyCategoryLabel(a.category as never)}</span>
                           </div>
                           <div className="flex justify-between">
-                            <span className="text-white/40">Occupant</span>
+                            <span className="text-muted">Occupant</span>
                             <span className="font-mono text-xs">{a.occupant.slice(0, 8)}…{a.occupant.slice(-6)}</span>
                           </div>
                           <div className="flex justify-between">
-                            <span className="text-white/40">Expires</span>
+                            <span className="text-muted">Expires</span>
                             <span className="text-xs">{new Date(Number(a.endTime) * 1000).toLocaleDateString()}</span>
                           </div>
                         </div>
                       ))}
                     </div>
                   ) : occLandId && !isLoadingOcc && !occError ? (
-                    <p className="text-white/40 text-sm text-center py-4">No active occupancy agreements.</p>
+                    <p className="text-muted text-sm text-center py-4">No active occupancy agreements.</p>
                   ) : null}
                 </div>
               </section>
@@ -1026,13 +1032,13 @@ export default function UserDashboard() {
             {tab === 'withdraw' && (
               <section>
                 <div className="glass-card p-6 rounded-2xl space-y-4 max-w-md">
-                  <h2 className="font-semibold text-white">Pending Sale Proceeds</h2>
-                  <p className="text-3xl font-bold text-indigo-400">
+                  <h2 className="font-semibold text-foreground">Pending Sale Proceeds</h2>
+                  <p className="text-3xl font-bold text-accent">
                     {pendingProceeds !== undefined
                       ? `${formatEther(pendingProceeds)} ETH`
                       : '—'}
                   </p>
-                  <p className="text-xs text-white/40">
+                  <p className="text-xs text-muted">
                     ETH from marketplace sales is held in the contract until you withdraw.
                   </p>
                   <button
