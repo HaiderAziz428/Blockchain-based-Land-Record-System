@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* ═══════════════════════════════════════════════
-   DARK — Pakistan Green palette (:root when .light is absent)
+   DARK (default) — Pakistan Green palette
 ═══════════════════════════════════════════════ */
 :root {
   --background: #0a110d;

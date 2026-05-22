@@ -30,32 +30,30 @@ const config = getDefaultConfig({
   },
 });
 
-const DEFAULT_THEME = 'light';
-
 // Must live *inside* ThemeProvider so useTheme() resolves.
-// Before mount, use DEFAULT_THEME so SSR and first paint match (avoids hydration flash).
+// The mounted guard ensures server and first-client render both use darkTheme,
+// preventing the SSR/client CSS-variable mismatch hydration error.
 function RainbowKitWithTheme({ children }: { children: React.ReactNode }) {
   const { resolvedTheme } = useTheme();
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => { setMounted(true); }, []);
 
-  const isLight = mounted ? resolvedTheme === 'light' : DEFAULT_THEME === 'light';
-
-  const theme: Theme = isLight
+  const theme: Theme =
+    mounted && resolvedTheme === 'light'
       ? lightTheme({
-          accentColor: '#15803d',
-          accentColorForeground: '#ffffff',
-          borderRadius: 'medium',
-          fontStack: 'system',
-          overlayBlur: 'small',
-        })
+        accentColor: '#15803d',
+        accentColorForeground: '#ffffff',
+        borderRadius: 'medium',
+        fontStack: 'system',
+        overlayBlur: 'small',
+      })
       : darkTheme({
-          accentColor: '#16a34a',
-          accentColorForeground: '#ffffff',
-          borderRadius: 'medium',
-          fontStack: 'system',
-          overlayBlur: 'small',
-        });
+        accentColor: '#16a34a',
+        accentColorForeground: '#ffffff',
+        borderRadius: 'medium',
+        fontStack: 'system',
+        overlayBlur: 'small',
+      });
 
   return <RainbowKitProvider theme={theme}>{children}</RainbowKitProvider>;
 }
@@ -63,7 +61,7 @@ function RainbowKitWithTheme({ children }: { children: React.ReactNode }) {
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = React.useState(() => new QueryClient());
   return (
-    <ThemeProvider attribute="class" defaultTheme={DEFAULT_THEME} enableSystem={false}>
+    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
       <WagmiProvider config={config}>
         <QueryClientProvider client={queryClient}>
           <RainbowKitWithTheme>
