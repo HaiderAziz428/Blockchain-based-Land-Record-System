@@ -30,16 +30,18 @@ const config = getDefaultConfig({
   },
 });
 
+const DEFAULT_THEME = 'light';
+
 // Must live *inside* ThemeProvider so useTheme() resolves.
-// The mounted guard ensures server and first-client render both use darkTheme,
-// preventing the SSR/client CSS-variable mismatch hydration error.
+// Before mount, use DEFAULT_THEME so SSR and first paint match (avoids hydration flash).
 function RainbowKitWithTheme({ children }: { children: React.ReactNode }) {
   const { resolvedTheme } = useTheme();
   const [mounted, setMounted] = React.useState(false);
   React.useEffect(() => { setMounted(true); }, []);
 
-  const theme: Theme =
-    mounted && resolvedTheme === 'light'
+  const isLight = mounted ? resolvedTheme === 'light' : DEFAULT_THEME === 'light';
+
+  const theme: Theme = isLight
       ? lightTheme({
           accentColor: '#15803d',
           accentColorForeground: '#ffffff',
@@ -61,7 +63,7 @@ function RainbowKitWithTheme({ children }: { children: React.ReactNode }) {
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = React.useState(() => new QueryClient());
   return (
-    <ThemeProvider attribute="class" defaultTheme="dark" enableSystem={false}>
+    <ThemeProvider attribute="class" defaultTheme={DEFAULT_THEME} enableSystem={false}>
       <WagmiProvider config={config}>
         <QueryClientProvider client={queryClient}>
           <RainbowKitWithTheme>
