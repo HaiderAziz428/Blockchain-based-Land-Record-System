@@ -233,12 +233,11 @@ body {
   from { opacity: 0; transform: translateY(16px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.home-stagger > * { animation: fadeUp 0.45s ease both; }
-.home-stagger > *:nth-child(1) { animation-delay: 0ms;   }
-.home-stagger > *:nth-child(2) { animation-delay: 80ms;  }
-.home-stagger > *:nth-child(3) { animation-delay: 160ms; }
-.home-stagger > *:nth-child(4) { animation-delay: 240ms; }
-.home-stagger > *:nth-child(5) { animation-delay: 320ms; }
+/* Only hero + how-it-works: staggered fade. Below-fold sections render immediately
+   so scrolling past How It Works does not show empty space (both + delay hid them). */
+.home-stagger > *:nth-child(-n + 2) { animation: fadeUp 0.45s ease both; }
+.home-stagger > *:nth-child(1) { animation-delay: 0ms; }
+.home-stagger > *:nth-child(2) { animation-delay: 80ms; }
 
 /* ═══════════════════════════════════════════════
    SCROLLBAR

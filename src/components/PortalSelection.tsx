@@ -89,10 +89,10 @@ export default function PortalSelection() {
         <button
           type="button"
           onClick={handleUserPortalClick}
-          disabled={!mounted || isBlockchainLoading || isChecking}
+          disabled={!mounted || (isConnected && isBlockchainLoading) || isChecking}
           className="group relative text-left rounded-2xl border border-border/60 bg-surface/50 hover:bg-surface hover:border-accent/40 transition-all p-5 sm:p-7 overflow-hidden disabled:cursor-wait"
         >
-          {(!mounted || isBlockchainLoading || isChecking) && (
+          {mounted && isConnected && (isBlockchainLoading || isChecking) && (
             <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-20 rounded-2xl gap-2 text-xs text-muted font-sans">
               <Loader2 className="animate-spin text-accent" size={16} />
               Reading on-chain registration…
