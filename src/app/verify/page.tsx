@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { usePublicClient } from 'wagmi';
+import { useState, useCallback } from 'react';
+import { useAccount, usePublicClient, useSignMessage } from 'wagmi';
 import Navbar from '@/src/components/Navbar';
 import {
   CONTRACT_V9_ABI,
@@ -19,7 +19,9 @@ import {
   Clock,
   ExternalLink,
   FileText,
+  KeyRound,
   Loader2,
+  Lock,
   Search,
   ShieldAlert,
   ShieldCheck,
@@ -97,11 +99,6 @@ type SubdivisionPlan = {
 
 const ZERO = '0x0000000000000000000000000000000000000000';
 
-function maskCnic(cnic: string | null | undefined) {
-  if (!cnic || cnic.length < 5) return '(hidden)';
-  return cnic.slice(0, 5) + '-XXXXX-X';
-}
-
 function shortAddr(addr: string) {
   return `${addr.slice(0, 8)}…${addr.slice(-6)}`;
 }
@@ -127,7 +124,47 @@ export default function VerifyPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Decrypted IPFS metadata state
+  const [metaLoading, setMetaLoading]   = useState(false);
+  const [metaError,   setMetaError]     = useState<string | null>(null);
+  const [metaData,    setMetaData]      = useState<Record<string, unknown> | null>(null);
+  const [metaWasEncrypted, setMetaWasEncrypted] = useState(false);
+
   const publicClient = usePublicClient();
+  const { address } = useAccount();
+  const { signMessageAsync } = useSignMessage();
+
+  // Fetch + server-decrypt IPFS metadata for the current land record.
+  // Gated: the caller must sign a message proving wallet ownership; the server
+  // only decrypts for the registry admin or a current shareholder of the land.
+  const fetchDecryptedMetadata = useCallback(async (landId: string) => {
+    if (!address) {
+      setMetaError('Connect your wallet to decrypt. Only the land owner or registry admin can view the full record.');
+      return;
+    }
+    setMetaLoading(true);
+    setMetaError(null);
+    setMetaData(null);
+    try {
+      const timestamp = Date.now();
+      // Must match buildMetadataAccessMessage() on the server byte-for-byte.
+      const message = `LandLedger — decrypt land metadata\nLand ID: ${landId}\nWallet: ${address}\nTimestamp: ${timestamp}`;
+      const signature = await signMessageAsync({ message });
+
+      const res = await fetch('/api/metadata', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ landId, address, signature, timestamp }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? 'Failed to decrypt metadata');
+      setMetaData(json.metadata as Record<string, unknown>);
+      setMetaWasEncrypted(json.decrypted === true);
+    } catch (e) {
+      setMetaError(e instanceof Error ? e.message : 'Unknown error');
+    }
+    setMetaLoading(false);
+  }, [address, signMessageAsync]);
 
   // Resolve a wallet address to its registered name (best-effort)
   const resolveUser = async (addr: string): Promise<UserProfile | undefined> => {
@@ -156,6 +193,8 @@ export default function VerifyPage() {
     setImportProposal(null);
     setInheritanceRequest(null);
     setSubdivisionPlan(null);
+    setMetaData(null);
+    setMetaError(null);
 
     try {
       // ── 1. Core land record ───────────────────────────────────────────────
@@ -348,18 +387,91 @@ export default function VerifyPage() {
                 </div>
               )}
 
-              {/* Deed document link */}
+              {/* Deed document — encrypted on IPFS, decrypted server-side */}
               {record.ipfsHash && (
-                <a
-                  href={`${IPFS_GATEWAY}/${record.ipfsHash}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-2 text-sm text-accent hover:text-accent transition-colors"
-                >
-                  <FileText size={15} />
-                  View Deed Document on IPFS
-                  <ExternalLink size={12} />
-                </a>
+                <div className="space-y-3">
+                  {/* Raw IPFS link (shows encrypted bytes) */}
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <a
+                      href={`${IPFS_GATEWAY}/${record.ipfsHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-2 text-sm text-accent hover:underline"
+                    >
+                      <FileText size={15} />
+                      View Raw IPFS Content
+                      <ExternalLink size={12} />
+                    </a>
+                    <span className="flex items-center gap-1 text-xs text-yellow-400/80 bg-yellow-500/10 border border-yellow-500/20 rounded-full px-2 py-0.5">
+                      <Lock size={10} />
+                      AES-256-GCM encrypted
+                    </span>
+                  </div>
+
+                  {/* Decrypt button — owner/admin only (wallet signature required) */}
+                  {!metaData && !metaLoading && (
+                    <div className="space-y-1">
+                      <button
+                        onClick={() => fetchDecryptedMetadata(record.landId)}
+                        className="flex items-center gap-2 text-xs text-indigo-400 hover:text-indigo-300 transition-colors border border-indigo-500/20 bg-indigo-500/10 rounded-lg px-3 py-2"
+                      >
+                        <KeyRound size={12} />
+                        Decrypt as owner / admin
+                      </button>
+                      <p className="text-[10px] text-muted/60">
+                        Requires a wallet signature. Only the land owner or registry admin can decrypt.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Loading */}
+                  {metaLoading && (
+                    <div className="flex items-center gap-2 text-xs text-muted">
+                      <Loader2 size={12} className="animate-spin" />
+                      Sign in your wallet, then decrypting server-side…
+                    </div>
+                  )}
+
+                  {/* Error */}
+                  {metaError && (
+                    <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                      {metaError}
+                    </p>
+                  )}
+
+                  {/* Decrypted metadata panel */}
+                  {metaData && (
+                    <div className="surface rounded-xl p-4 space-y-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        <CheckCircle2 size={13} className="text-green-400" />
+                        <span className="text-xs text-green-400 font-medium">
+                          {metaWasEncrypted
+                            ? 'Decrypted successfully — AES-256-GCM'
+                            : 'Plain metadata (legacy record)'}
+                        </span>
+                      </div>
+
+                      {/* Attributes grid — full record, including CNIC + name.
+                          This panel is only reachable by the owner/admin after a
+                          verified wallet signature, so showing PII here is safe. */}
+                      {Array.isArray((metaData as { attributes?: unknown[] }).attributes) && (
+                        <div className="grid grid-cols-2 gap-2">
+                          {((metaData as { attributes: { trait_type: string; value: unknown }[] }).attributes)
+                            .map((attr) => (
+                              <div key={attr.trait_type} className="bg-background/40 rounded-lg px-3 py-2">
+                                <p className="text-[10px] text-muted uppercase tracking-wide">{attr.trait_type}</p>
+                                <p className="text-xs text-foreground font-mono mt-0.5">{String(attr.value)}</p>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+
+                      <p className="text-[10px] text-muted/60 italic">
+                        Full record — visible because your wallet is the owner or registry admin.
+                      </p>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
 
@@ -374,17 +486,16 @@ export default function VerifyPage() {
                   {shareholders.map((s) => (
                     <div key={s.address} className="surface p-4 rounded-xl flex flex-wrap items-center justify-between gap-3">
                       <div>
-                        {s.profile?.isRegistered ? (
-                          <>
-                            <p className="text-sm text-foreground font-medium">{s.profile.name}</p>
-                            <p className="text-xs text-muted font-mono mt-0.5">
-                              CNIC {maskCnic(s.profile.cnic)}
-                            </p>
-                          </>
-                        ) : (
-                          <p className="text-sm font-mono text-muted">{shortAddr(s.address)}</p>
-                        )}
-                        <p className="text-xs text-muted/60 font-mono mt-0.5">{shortAddr(s.address)}</p>
+                        {/* Public record: identify owners by wallet address only.
+                            The registered name + CNIC are deliberately NOT shown
+                            here so this page matches its privacy promise. (They
+                            remain readable on-chain via getUser — see note below.) */}
+                        <p className="text-sm font-mono text-foreground">{shortAddr(s.address)}</p>
+                        <p className="text-[11px] text-muted/60 mt-0.5">
+                          {s.profile?.isRegistered
+                            ? 'Registered owner — identity hidden on public record'
+                            : 'Unregistered wallet'}
+                        </p>
                       </div>
                       <div className="text-right">
                         <p className="text-accent font-bold text-lg">{formatBps(s.bps)}</p>

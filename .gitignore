@@ -52,3 +52,8 @@ next-env.d.ts
 /script/
 INSTRUCTIONS.md
 handoff.md
+
+# Local dev/ops scripts & scratch notes (not part of the app)
+/scripts/
+answer.md
+readme2.md

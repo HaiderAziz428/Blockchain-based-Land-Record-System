@@ -4,6 +4,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { sepolia } from 'viem/chains';
 import { createClient } from '@supabase/supabase-js';
 import { CONTRACT_V9_ABI, CONTRACT_V9_ADDRESS } from '@/src/utils/contractV9';
+import { encryptJSON } from '@/src/utils/encryption';
 
 const RPC_URL = 'https://ethereum-sepolia.publicnode.com';
 
@@ -131,29 +132,50 @@ export async function POST(request: Request) {
 
     if (!ipfsHash) {
       // Auto-generate ERC-721 metadata from Supabase fields — no manual upload needed
-      void (govtRecord.land_type ?? 'RESIDENTIAL').toUpperCase(); // consumed via attributes below
       const metadata = {
         name: `LandLedger Plot — ${landId}`,
         description: `On-chain land record for plot ${landId}, digitised from the govt allotment registry.`,
         attributes: [
-          { trait_type: 'Land ID', value: landId },
-          { trait_type: 'Land Type', value: govtRecord.land_type ?? 'RESIDENTIAL' },
-          { trait_type: 'Location', value: govtRecord.location ?? '' },
-          { trait_type: 'Area (sq yards)', value: govtRecord.area_sq_yards ?? 0 },
-          { trait_type: 'Owner CNIC', value: userProfile.cnic },
-          { trait_type: 'Owner Name', value: userProfile.name },
+          { trait_type: 'Land ID',          value: landId },
+          { trait_type: 'Land Type',        value: govtRecord.land_type ?? 'RESIDENTIAL' },
+          { trait_type: 'Location',         value: govtRecord.location ?? '' },
+          { trait_type: 'Area (sq yards)',  value: govtRecord.area_sq_yards ?? 0 },
+          { trait_type: 'Owner CNIC',       value: userProfile.cnic },
+          { trait_type: 'Owner Name',       value: userProfile.name },
         ],
       };
 
-      ipfsHash = await pinJsonToPinata(metadata, `LandLedger-${landId}`);
+      // Encrypt the metadata before pinning — the CNIC and owner name must not
+      // be readable by anyone who happens to find the CID on a public IPFS gateway.
+      // The CID stored on-chain is the real, unencrypted CID so tokenURI() keeps
+      // working correctly. Only the content it points to is encrypted.
+      const { payload: encryptedPayload, keyHex } = encryptJSON(metadata);
 
-      // Store CID back in Supabase so future calls skip re-pinning
-      await db
+      ipfsHash = await pinJsonToPinata(encryptedPayload, `LandLedger-${landId}`);
+
+      // Store CID + encryption key in Supabase. The key never goes on-chain —
+      // only the CID does. This MUST succeed before we mint: if the key is not
+      // persisted, the encrypted IPFS content becomes permanently undecryptable.
+      // We therefore check the result and abort the mint on failure rather than
+      // proceeding to proposeLandImport with an orphaned (keyless) record.
+      const { error: updateErr } = await db
         .from('govt_land_records')
-        .update({ ipfs_hash: ipfsHash })
+        .update({ ipfs_hash: ipfsHash, enc_key: keyHex })
         .eq('land_id', landId);
 
-      console.log(`Auto-generated metadata for ${landId}: ${ipfsHash}`);
+      if (updateErr) {
+        return NextResponse.json(
+          {
+            error:
+              `Failed to persist encryption key (${updateErr.message}). ` +
+              `Mint aborted to avoid an undecryptable record. ` +
+              `Ensure govt_land_records has TEXT columns "ipfs_hash" and "enc_key".`,
+          },
+          { status: 500 }
+        );
+      }
+
+      console.log(`Encrypted metadata pinned for ${landId}: ${ipfsHash}`);
     }
 
     // 5. Sign proposeLandImport as REGISTRAR

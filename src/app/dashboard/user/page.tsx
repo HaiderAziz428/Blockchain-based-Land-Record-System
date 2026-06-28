@@ -191,7 +191,7 @@ export default function UserDashboard() {
   const [verifyingLandId, setVerifyingLandId] = useState<string | null>(null);
 
   const handleVerifyAndMint = async (landId: string) => {
-    if (!address) return;
+    if (!address || !publicClient) return;
     setVerifyingLandId(landId);
     setNotice(null);
     try {
@@ -202,10 +202,20 @@ export default function UserDashboard() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Mint failed');
-      setTxToast({ hash: data.txHash, message: 'Land proposed on-chain!' });
-      setTimeout(() => { loadLands(); setVerifyingLandId(null); }, 8000);
+
+      setTxToast({ hash: data.txHash, message: 'Minting on-chain… waiting for confirmation.' });
+
+      // The API returns as soon as the tx is *broadcast*, not mined. Wait for the
+      // actual receipt before reloading — a fixed setTimeout was unreliable (8s is
+      // often too short on Sepolia), which is why the UI didn't update even though
+      // Etherscan eventually showed success.
+      await publicClient.waitForTransactionReceipt({ hash: data.txHash as `0x${string}` });
+
+      setTxToast({ hash: data.txHash, message: 'Land proposed on-chain! Confirm ownership to activate.' });
+      await loadLands();
     } catch (e) {
       setNotice({ tone: 'error', message: `Mint failed: ${e instanceof Error ? e.message : 'Unknown error'}` });
+    } finally {
       setVerifyingLandId(null);
     }
   };
@@ -515,18 +525,52 @@ export default function UserDashboard() {
         })
       );
 
-      // Step 4: unminted allotments from Supabase
-      const unmintedSummaries: LandSummary[] = unmintedRecords.map((gr) => ({
-        landId: gr.land_id,
-        ipfsHash: gr.ipfs_hash ?? '',
-        landType: 0,
-        status: -1,
-        shareBps: 0,
-        location: gr.location,
-        areaSqYards: gr.area_sq_yards,
-        isOnChain: false,
-        govtIpfsHash: gr.ipfs_hash,
-      }));
+      // Step 4: Supabase records not held via getLandsByOwner. Some of these may
+      // already be *proposed* on-chain (PENDING_VERIFICATION): proposeLandImport
+      // creates the LandRecord but does NOT assign shares until verifyLandImport
+      // finalises it — so they don't show up in getLandsByOwner yet. Check each
+      // against getLandRecord so a proposed land surfaces with the "Confirm
+      // Ownership" action instead of incorrectly re-offering "Verify & Mint"
+      // (which would fail with "Land already minted on-chain").
+      const unmintedSummaries: LandSummary[] = await Promise.all(
+        unmintedRecords.map(async (gr): Promise<LandSummary> => {
+          try {
+            const rec = (await publicClient.readContract({
+              address: CONTRACT_V9_ADDRESS,
+              abi: CONTRACT_V9_ABI,
+              functionName: 'getLandRecord',
+              args: [gr.land_id],
+            })) as { landId: string; ipfsHash: string; landType: number; status: number };
+
+            if (rec.landId && rec.landId !== '') {
+              // Proposed on-chain but not yet finalised for this wallet.
+              return {
+                landId: gr.land_id,
+                ipfsHash: rec.ipfsHash,
+                landType: rec.landType,
+                status: rec.status,
+                shareBps: 0,
+                location: gr.location,
+                areaSqYards: gr.area_sq_yards,
+                isOnChain: true,
+                govtIpfsHash: gr.ipfs_hash,
+              };
+            }
+          } catch { /* not on-chain yet — fall through to unminted */ }
+
+          return {
+            landId: gr.land_id,
+            ipfsHash: gr.ipfs_hash ?? '',
+            landType: 0,
+            status: -1,
+            shareBps: 0,
+            location: gr.location,
+            areaSqYards: gr.area_sq_yards,
+            isOnChain: false,
+            govtIpfsHash: gr.ipfs_hash,
+          };
+        })
+      );
 
       setLands([...onChainSummaries, ...unmintedSummaries]);
     } catch (e) {
