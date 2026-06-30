@@ -199,7 +199,7 @@ export default function CreateListingModal({ isOpen, onClose, land, sellerAddres
 
           <fieldset>
             <legend className="text-[11px] uppercase tracking-wide text-muted mb-2">
-              Buyer contact <span className="text-muted-foreground normal-case font-normal">— optional, stored on IPFS</span>
+              Your WhatsApp / contact <span className="text-muted-foreground normal-case font-normal">— optional</span>
             </legend>
             <input
               type="text"
@@ -209,6 +209,9 @@ export default function CreateListingModal({ isOpen, onClose, land, sellerAddres
               disabled={isBusy}
               className="field"
             />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Stored permanently on public IPFS — use a number you&apos;re comfortable sharing.
+            </p>
           </fieldset>
 
           <fieldset>

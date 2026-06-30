@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import AdminGuard from '@/src/components/guards/AdminGuard';
 import Navbar from '@/src/components/Navbar';
 import TxToast from '@/src/components/TxToast';
+import { supabase } from '@/src/lib/supabase';
 import {
   useAccount,
   useReadContract,
@@ -30,6 +31,7 @@ import {
   Plus,
   Trash2,
   AlertCircle,
+  CheckCircle,
   ExternalLink,
   ChevronRight,
   ChevronLeft,
@@ -37,7 +39,7 @@ import {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type Tab = 'import' | 'lands' | 'inheritance' | 'dispute' | 'subdivision' | 'roles';
+type Tab = 'import' | 'lands' | 'coowners' | 'inheritance' | 'dispute' | 'subdivision' | 'roles';
 
 interface OwnerEntry { address: string; shareBps: string; }
 
@@ -47,6 +49,22 @@ interface ChildEntry {
   landId: string;
   ipfsHash: string;
   owners: OwnerEntry[];
+}
+
+interface CoOwnerRow {
+  owner_cnic: string;
+  verified_at: string | null;
+}
+
+interface InheritanceReq {
+  id: number;
+  land_id: string;
+  requester_address: string;
+  court_order_cid: string;
+  heirs_json: string | null;
+  deceased_address: string | null;
+  status: string;
+  created_at: string;
 }
 
 const STATUS_TONE: Record<number, string> = {
@@ -176,6 +194,104 @@ function AdminDashboardInner() {
     setIsImporting(false);
   };
 
+  // ── Co-owner management ───────────────────────────────────────────────────
+  const [coLandId, setCoLandId]         = useState('');
+  const [coOwners, setCoOwners]         = useState<CoOwnerRow[]>([]);
+  const [coLoading, setCoLoading]       = useState(false);
+  const [coLoaded, setCoLoaded]         = useState(false);
+  const [coNewCnic, setCoNewCnic]       = useState('');
+  const [coSaving, setCoSaving]         = useState(false);
+  const [coResult, setCoResult]         = useState<{ tone: 'success' | 'error'; msg: string } | null>(null);
+
+  const loadCoOwners = async () => {
+    if (!coLandId.trim()) return;
+    setCoLoading(true);
+    setCoResult(null);
+    setCoLoaded(false);
+    const { data, error } = await supabase
+      .from('land_co_owners')
+      .select('owner_cnic, verified_at')
+      .eq('land_id', coLandId.trim())
+      .order('owner_cnic');
+    if (error) {
+      setCoResult({ tone: 'error', msg: `DB error: ${error.message}` });
+    } else {
+      setCoOwners((data as CoOwnerRow[]) ?? []);
+      setCoLoaded(true);
+      if ((data ?? []).length === 0) {
+        setCoResult({ tone: 'error', msg: 'No co-owner records found for this land ID. Check that the land exists in govt_land_records.' });
+      }
+    }
+    setCoLoading(false);
+  };
+
+  const handleAddCoOwner = async () => {
+    const cnic = coNewCnic.trim();
+    if (!cnic || !coLandId.trim()) return;
+    if (coOwners.some((r) => r.owner_cnic === cnic)) {
+      setCoResult({ tone: 'error', msg: `CNIC ${cnic} is already a co-owner of this land.` });
+      return;
+    }
+    setCoSaving(true);
+    setCoResult(null);
+    const { error } = await supabase
+      .from('land_co_owners')
+      .insert({ land_id: coLandId.trim(), owner_cnic: cnic, verified_at: null });
+    if (error) {
+      setCoResult({ tone: 'error', msg: `Failed to add: ${error.message}` });
+    } else {
+      setCoNewCnic('');
+      setCoResult({ tone: 'success', msg: `Co-owner ${cnic} added. They must now verify via the User Portal.` });
+      await loadCoOwners();
+    }
+    setCoSaving(false);
+  };
+
+  const handleRemoveCoOwner = async (cnic: string, verifiedAt: string | null) => {
+    if (verifiedAt) {
+      setCoResult({ tone: 'error', msg: `Cannot remove ${cnic} — they have already verified. Remove is only allowed before verification.` });
+      return;
+    }
+    if (!confirm(`Remove co-owner ${cnic} from land ${coLandId}? This cannot be undone.`)) return;
+    setCoResult(null);
+    const { error } = await supabase
+      .from('land_co_owners')
+      .delete()
+      .eq('land_id', coLandId.trim())
+      .eq('owner_cnic', cnic);
+    if (error) {
+      setCoResult({ tone: 'error', msg: `Failed to remove: ${error.message}` });
+    } else {
+      setCoResult({ tone: 'success', msg: `Co-owner ${cnic} removed.` });
+      await loadCoOwners();
+    }
+  };
+
+  // ── Pending inheritance requests (from Supabase) ──────────────────────
+  const [pendingInhReqs, setPendingInhReqs] = useState<InheritanceReq[]>([]);
+  const [isLoadingReqs, setIsLoadingReqs] = useState(false);
+
+  const loadPendingReqs = async () => {
+    setIsLoadingReqs(true);
+    const { data } = await supabase
+      .from('inheritance_requests')
+      .select('*')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: false });
+    setPendingInhReqs((data as InheritanceReq[]) ?? []);
+    setIsLoadingReqs(false);
+  };
+
+  useEffect(() => {
+    if (tab === 'inheritance') loadPendingReqs();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  const prefillFromRequest = (req: InheritanceReq) => {
+    setInhLandId(req.land_id);
+    setInhCourtCid(req.court_order_cid);
+  };
+
   // ── Initiate Inheritance (POST /api/inheritance) ───────────────────────
   const [inhLandId, setInhLandId] = useState('');
   const [inhDeceased, setInhDeceased] = useState('');
@@ -226,6 +342,20 @@ function AdminDashboardInner() {
       if (data.txHash) {
         setTxToast({ hash: data.txHash, message: 'Inheritance initiated!' });
         setInhResult(`Success! Tx: ${data.txHash}`);
+        // Mark the matching pending request as initiated and persist heir data
+        // so the user dashboard can auto-detect plans where a wallet is a heir.
+        await supabase
+          .from('inheritance_requests')
+          .update({
+            status: 'initiated',
+            deceased_address: inhDeceased,
+            heirs_json: JSON.stringify(
+              inhHeirs.map((h) => ({ address: h.address, shareBps: parseInt(h.shareBps) || 0 }))
+            ),
+          })
+          .eq('land_id', inhLandId.trim())
+          .eq('status', 'pending');
+        await loadPendingReqs();
       } else {
         setInhResult(`Error: ${data.error}`);
       }
@@ -440,6 +570,7 @@ function AdminDashboardInner() {
         <div className="flex flex-wrap gap-2">
           {tabBtn('import', 'Import Land')}
           {tabBtn('lands', 'All Lands')}
+          {tabBtn('coowners', 'Co-owners')}
           {tabBtn('inheritance', 'Initiate Inheritance')}
           {tabBtn('dispute', 'Resolve Disputes')}
           {tabBtn('subdivision', 'Propose Subdivision')}
@@ -475,27 +606,57 @@ function AdminDashboardInner() {
               </div>
 
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs text-muted">Proposed Owners (must sum to 10,000 bps)</label>
-                  <button type="button" onClick={addImportOwner} className="text-xs text-accent flex items-center gap-1 hover:text-accent">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <label className="text-xs text-muted">Proposed Owners</label>
+                    <p className="text-[11px] text-muted/60 mt-0.5">Wallet address of each registered owner + their share in bps. Must sum to 10,000 (100%).</p>
+                  </div>
+                  <button type="button" onClick={addImportOwner} className="text-xs text-accent flex items-center gap-1 hover:text-accent shrink-0 ml-4">
                     <Plus size={12} /> Add owner
                   </button>
                 </div>
-                <div className="space-y-2">
+                <div className="space-y-3">
                   {importOwners.map((o, i) => (
-                    <div key={i} className="flex gap-2 items-center">
-                      <input type="text" value={o.address} onChange={(e) => updateImportOwner(i, 'address', e.target.value)} className="field flex-1 font-mono text-xs" placeholder="0x…" required />
-                      <input type="number" value={o.shareBps} onChange={(e) => updateImportOwner(i, 'shareBps', e.target.value)} className="field w-24 font-mono text-xs" placeholder="bps" required />
-                      {importOwners.length > 1 && (
-                        <button type="button" onClick={() => removeImportOwner(i)} className="text-red-400 hover:text-red-300">
-                          <Trash2 size={14} />
-                        </button>
-                      )}
+                    <div key={i} className="surface p-3 rounded-xl space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-muted">Owner {i + 1}</span>
+                        {importOwners.length > 1 && (
+                          <button type="button" onClick={() => removeImportOwner(i)} className="text-red-400 hover:text-red-300">
+                            <Trash2 size={13} />
+                          </button>
+                        )}
+                      </div>
+                      <div>
+                        <label className="text-[11px] text-muted/70">Wallet address</label>
+                        <input
+                          type="text"
+                          value={o.address}
+                          onChange={(e) => updateImportOwner(i, 'address', e.target.value)}
+                          className="field w-full mt-1 font-mono text-xs"
+                          placeholder="0x0000000000000000000000000000000000000000"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[11px] text-muted/70">
+                          Share (bps) — e.g. 10000 = 100%, 5000 = 50%
+                        </label>
+                        <input
+                          type="number"
+                          value={o.shareBps}
+                          onChange={(e) => updateImportOwner(i, 'shareBps', e.target.value)}
+                          className="field w-full mt-1 font-mono text-xs"
+                          placeholder="10000"
+                          min="1"
+                          max="10000"
+                          required
+                        />
+                      </div>
                     </div>
                   ))}
                 </div>
-                <p className={`text-xs mt-1 ${ownerTotal(importOwners) === 10000 ? 'text-green-400' : 'text-orange-400'}`}>
-                  Total: {ownerTotal(importOwners)} / 10,000 bps
+                <p className={`text-xs mt-2 font-mono ${ownerTotal(importOwners) === 10000 ? 'text-green-400' : 'text-orange-400'}`}>
+                  Total: {ownerTotal(importOwners)} / 10,000 bps {ownerTotal(importOwners) === 10000 ? '✓' : '— must equal 10,000'}
                 </p>
               </div>
 
@@ -510,6 +671,123 @@ function AdminDashboardInner() {
                 Propose Import
               </button>
             </form>
+          </div>
+        )}
+
+        {/* ── Co-owner Management ─────────────────────────────────────────── */}
+        {tab === 'coowners' && (
+          <div className="glass-card p-6 rounded-2xl space-y-5">
+            <div>
+              <h2 className="font-semibold">Co-owner Management</h2>
+              <p className="text-xs text-muted mt-1">
+                Add or remove co-owners from a land record before it is minted on-chain.
+                Once all co-owners verify in the User Portal, the land is proposed on-chain automatically.
+              </p>
+            </div>
+
+            {/* Land lookup */}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={coLandId}
+                onChange={(e) => { setCoLandId(e.target.value); setCoLoaded(false); setCoOwners([]); setCoResult(null); }}
+                onKeyDown={(e) => e.key === 'Enter' && loadCoOwners()}
+                className="field flex-1"
+                placeholder="Enter Land ID (e.g. DHA-P9-042)"
+              />
+              <button
+                onClick={loadCoOwners}
+                disabled={coLoading || !coLandId.trim()}
+                className="btn-primary px-4 flex items-center gap-2"
+              >
+                {coLoading ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
+                Load
+              </button>
+            </div>
+
+            {coResult && (
+              <div className={`text-xs p-3 rounded-lg border flex items-start gap-2 ${
+                coResult.tone === 'error'
+                  ? 'bg-red-500/10 border-red-500/20 text-red-400'
+                  : 'bg-green-500/10 border-green-500/20 text-green-400'
+              }`}>
+                {coResult.tone === 'error' ? <AlertCircle size={13} className="mt-0.5 shrink-0" /> : <CheckCircle size={13} className="mt-0.5 shrink-0" />}
+                {coResult.msg}
+              </div>
+            )}
+
+            {/* Co-owner list */}
+            {coLoaded && coOwners.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs text-muted font-medium uppercase tracking-wider">
+                  Current co-owners — {coOwners.length} total
+                </p>
+                {coOwners.map((row) => (
+                  <div key={row.owner_cnic} className="surface p-3 rounded-xl flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${row.verified_at ? 'bg-green-400' : 'bg-yellow-400'}`} />
+                      <div className="min-w-0">
+                        <p className="font-mono text-sm text-foreground truncate">{row.owner_cnic}</p>
+                        <p className="text-xs text-muted">
+                          {row.verified_at
+                            ? `Verified ${new Date(row.verified_at).toLocaleString()}`
+                            : 'Not yet verified'}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className={`pill border text-xs ${
+                        row.verified_at
+                          ? 'bg-green-500/10 text-green-400 border-green-500/20'
+                          : 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
+                      }`}>
+                        {row.verified_at ? 'Verified' : 'Pending'}
+                      </span>
+                      <button
+                        onClick={() => handleRemoveCoOwner(row.owner_cnic, row.verified_at)}
+                        className="text-red-400 hover:text-red-300 disabled:opacity-30 p-1"
+                        title={row.verified_at ? 'Cannot remove — already verified' : 'Remove co-owner'}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+                <div className="pt-1 flex items-center gap-2 text-xs text-muted">
+                  <span className="w-2 h-2 rounded-full bg-green-400 shrink-0" /> Verified
+                  <span className="w-2 h-2 rounded-full bg-yellow-400 shrink-0 ml-2" /> Awaiting verification
+                </div>
+              </div>
+            )}
+
+            {/* Add new co-owner */}
+            {coLoaded && (
+              <div className="pt-2 border-t border-white/5 space-y-3">
+                <p className="text-xs text-muted font-medium uppercase tracking-wider">Add co-owner</p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={coNewCnic}
+                    onChange={(e) => setCoNewCnic(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAddCoOwner()}
+                    className="field flex-1 font-mono text-sm"
+                    placeholder="CNIC (e.g. 35201-1234567-1)"
+                  />
+                  <button
+                    onClick={handleAddCoOwner}
+                    disabled={coSaving || !coNewCnic.trim()}
+                    className="btn-primary px-4 flex items-center gap-2"
+                  >
+                    {coSaving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+                    Add
+                  </button>
+                </div>
+                <p className="text-xs text-muted">
+                  The co-owner must have their CNIC in <span className="font-mono text-foreground">govt_citizens</span> and must register a wallet before they can verify.
+                </p>
+              </div>
+            )}
           </div>
         )}
 
@@ -556,6 +834,54 @@ function AdminDashboardInner() {
 
         {/* ── Initiate Inheritance ────────────────────────────────────────── */}
         {tab === 'inheritance' && (
+          <div className="space-y-5">
+
+          {/* Pending user requests */}
+          <div className="glass-card p-6 rounded-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold">Pending Inheritance Requests</h2>
+              <button onClick={loadPendingReqs} disabled={isLoadingReqs} className="btn-ghost text-xs px-3 py-1.5 flex items-center gap-1.5">
+                {isLoadingReqs ? <Loader2 size={12} className="animate-spin" /> : '↻'} Refresh
+              </button>
+            </div>
+            {isLoadingReqs ? (
+              <div className="flex justify-center py-4"><Loader2 size={18} className="animate-spin text-muted" /></div>
+            ) : pendingInhReqs.length === 0 ? (
+              <p className="text-xs text-muted py-2">No pending requests.</p>
+            ) : (
+              <div className="space-y-3">
+                {pendingInhReqs.map((req) => (
+                  <div key={req.id} className="surface p-4 rounded-xl space-y-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="space-y-1 min-w-0">
+                        <p className="text-sm font-medium font-mono">{req.land_id}</p>
+                        <p className="text-xs text-muted truncate font-mono">{req.requester_address}</p>
+                        <p className="text-xs text-muted">{new Date(req.created_at).toLocaleDateString()}</p>
+                      </div>
+                      <div className="flex flex-col gap-2 shrink-0">
+                        <a
+                          href={`https://gateway.pinata.cloud/ipfs/${req.court_order_cid}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="btn-ghost text-xs px-3 py-1.5 flex items-center gap-1.5"
+                        >
+                          <ExternalLink size={11} /> Court Order
+                        </a>
+                        <button
+                          onClick={() => prefillFromRequest(req)}
+                          className="btn-primary text-xs px-3 py-1.5 flex items-center gap-1.5"
+                        >
+                          <CheckCircle size={11} /> Initiate
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Initiate form */}
           <div className="glass-card p-6 rounded-2xl space-y-5">
             <h2 className="font-semibold">Initiate Inheritance (REGISTRAR)</h2>
             <form onSubmit={handleInheritance} className="space-y-4">
@@ -629,6 +955,7 @@ function AdminDashboardInner() {
                 Initiate Inheritance
               </button>
             </form>
+          </div>
           </div>
         )}
 

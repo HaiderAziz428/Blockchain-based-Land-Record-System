@@ -5,6 +5,71 @@
 
 ---
 
+## 0. IPFS Content Encryption (added post-v3)
+
+### What is encrypted and why
+
+The ERC-721 metadata JSON generated at mint time contains the owner's **CNIC and full name** — sensitive personal data that must not be readable by anyone who finds the CID on a public IPFS gateway.
+
+**What we encrypt:** the metadata JSON content before it is pinned to Pinata.
+**What we do NOT encrypt:** the CID itself. Encrypting the CID would break `tokenURI()` and the ERC-721 standard — the CID stored on-chain must remain a real IPFS address.
+
+### Algorithm
+
+**AES-256-GCM** via Node.js built-in `crypto` module (server-only — never runs in the browser).
+
+- 256-bit random key per land record
+- 96-bit random IV per encryption
+- 128-bit authentication tag (tamper-evident — decryption fails if bytes are altered)
+
+### Flow
+
+```
+Build metadata JSON (CNIC, owner name, plot details)
+  → encryptJSON()  [src/utils/encryption.ts]
+  → upload encrypted payload JSON to Pinata
+  → get real CID
+  → store CID on-chain (tokenURI works fine)
+  → store enc_key in Supabase govt_land_records.enc_key
+```
+
+### Decryption (server-side only)
+
+`GET /api/metadata?landId=X`
+1. Reads CID + enc_key from Supabase
+2. Fetches encrypted bytes from IPFS gateway
+3. Decrypts with `decryptJSON()` server-side
+4. Returns safe metadata JSON to the browser (CNIC/owner name hidden on public page)
+
+The encryption key **never** reaches the browser in any response.
+
+### Files
+
+| File | Role |
+|------|------|
+| `src/utils/encryption.ts` | `encryptJSON()` / `decryptJSON()` / `isEncryptedPayload()` |
+| `src/app/api/verify/route.ts` | Encrypts before pinning; saves `enc_key` to Supabase |
+| `src/app/api/metadata/route.ts` | Server-side decryption endpoint |
+| `src/app/verify/page.tsx` | "Decrypt & View Metadata" button → calls `/api/metadata` |
+
+### Supabase schema change required
+
+Run this SQL once in your Supabase dashboard → SQL Editor:
+
+```sql
+ALTER TABLE govt_land_records ADD COLUMN IF NOT EXISTS enc_key TEXT;
+```
+
+### What the raw IPFS content looks like now (encrypted)
+
+```json
+{ "encrypted": true, "algorithm": "aes-256-gcm", "iv": "3a8f...", "data": "7f2e..." }
+```
+
+Listing photos and listing metadata JSON are **not** encrypted — they are public marketplace data that buyers need to browse.
+
+---
+
 ## 1. Executive Summary
 
 **LandLedger** (codebase: *fyp-blockchain-based-land-system*) is a **fully decentralized land registry** built on the Ethereum Sepolia testnet, **targeted at new private and semi-private housing developments in Pakistan** — DHA, Bahria Town, CDA/LDA new sectors, and private real-estate schemes — that issue plot allotments paperless from day one.

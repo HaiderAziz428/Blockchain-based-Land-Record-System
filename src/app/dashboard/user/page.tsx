@@ -19,14 +19,18 @@ import {
   ArrowRightLeft,
   CheckCircle,
   ExternalLink,
+  FileText,
   Gavel,
   GitBranch,
   Home,
   Loader2,
   Tag,
+  Upload,
   Users,
   Wallet,
+  X,
 } from 'lucide-react';
+import { uploadFileToIPFS } from '@/src/utils/pinata';
 import {
   CONTRACT_V9_ABI,
   CONTRACT_V9_ADDRESS,
@@ -51,6 +55,12 @@ interface GovtRecord {
   ipfs_hash: string | null;
 }
 
+interface CoVerification {
+  totalCount: number;
+  verifiedCount: number;
+  myVerified: boolean;
+}
+
 interface LandSummary {
   landId: string;
   ipfsHash: string;
@@ -62,6 +72,7 @@ interface LandSummary {
   isOnChain: boolean;
   govtIpfsHash?: string | null;
   activeListing?: { price: bigint; deadline: bigint } | null;
+  coVerification?: CoVerification;
 }
 
 interface OccupancyAgreement {
@@ -74,6 +85,17 @@ interface OccupancyAgreement {
   termsCid: string;
   descriptionCid: string;
   isRevoked: boolean;
+}
+
+interface ActivePlan {
+  landId: string;
+  courtOrderCid: string;
+  myShareBps: number;
+  heirs: string[];
+  heirShares: number[];
+  approvalCount: bigint;
+  hasMyApproval: boolean;
+  isExecuted: boolean;
 }
 
 const IPFS_GATEWAY = 'https://gateway.pinata.cloud/ipfs';
@@ -203,12 +225,18 @@ export default function UserDashboard() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Mint failed');
 
+      // Multi-owner: not all co-owners have verified yet
+      if (data.pending) {
+        setNotice({
+          tone: 'info',
+          message: `Your verification is recorded (${data.verifiedCount}/${data.totalCount} owners). The land will be proposed on-chain once all co-owners verify.`,
+        });
+        return;
+      }
+
       setTxToast({ hash: data.txHash, message: 'Minting on-chain… waiting for confirmation.' });
 
-      // The API returns as soon as the tx is *broadcast*, not mined. Wait for the
-      // actual receipt before reloading — a fixed setTimeout was unreliable (8s is
-      // often too short on Sepolia), which is why the UI didn't update even though
-      // Etherscan eventually showed success.
+      // Wait for the receipt before reloading — a fixed setTimeout was unreliable on Sepolia.
       await publicClient.waitForTransactionReceipt({ hash: data.txHash as `0x${string}` });
 
       setTxToast({ hash: data.txHash, message: 'Land proposed on-chain! Confirm ownership to activate.' });
@@ -252,6 +280,101 @@ export default function UserDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isCancelSuccess, cancelHash]); // loadLands is a stable local function
 
+  // ── My active succession plans (where I am listed as a heir) ─────────────
+  const [mySuccessionPlans, setMySuccessionPlans] = useState<ActivePlan[]>([]);
+  const [isLoadingMyPlans, setIsLoadingMyPlans] = useState(false);
+
+  const loadMySuccessionPlans = async () => {
+    if (!address || !publicClient) return;
+    setIsLoadingMyPlans(true);
+    try {
+      const { data } = await supabase
+        .from('inheritance_requests')
+        .select('land_id, court_order_cid, heirs_json')
+        .eq('status', 'initiated');
+
+      const plans: ActivePlan[] = [];
+      for (const row of data ?? []) {
+        let heirEntries: { address: string; shareBps: number }[] = [];
+        try { heirEntries = JSON.parse(row.heirs_json ?? '[]'); } catch { continue; }
+        const mine = heirEntries.find(
+          (h) => h.address.toLowerCase() === address.toLowerCase()
+        );
+        if (!mine) continue;
+
+        try {
+          const raw = await publicClient.readContract({
+            address: CONTRACT_V9_ADDRESS,
+            abi: CONTRACT_V9_ABI,
+            functionName: 'getInheritanceRequest',
+            args: [row.land_id],
+          });
+          const r = raw as unknown as Record<string, unknown>;
+          const t = raw as unknown as unknown[];
+          const isExec = (r.isExecuted ?? t[4] ?? false) as boolean;
+          if (isExec) continue; // already done
+
+          const voted = await publicClient.readContract({
+            address: CONTRACT_V9_ADDRESS,
+            abi: CONTRACT_V9_ABI,
+            functionName: 'hasHeirApproved',
+            args: [row.land_id, address],
+          }) as boolean;
+
+          plans.push({
+            landId: row.land_id,
+            courtOrderCid: row.court_order_cid,
+            myShareBps: mine.shareBps,
+            heirs: (r.heirs ?? t[1] ?? []) as string[],
+            heirShares: (r.heirShares ?? t[2] ?? []) as number[],
+            approvalCount: (r.approvalCount ?? t[3] ?? BigInt(0)) as bigint,
+            hasMyApproval: voted,
+            isExecuted: isExec,
+          });
+        } catch { /* skip if land not yet on-chain */ }
+      }
+      setMySuccessionPlans(plans);
+    } finally {
+      setIsLoadingMyPlans(false);
+    }
+  };
+
+  // Load plans whenever address becomes available
+  useEffect(() => {
+    if (address && publicClient) loadMySuccessionPlans();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [address]);
+
+  // ── Request Inheritance ───────────────────────────────────────────────────
+  const [reqLandId, setReqLandId] = useState('');
+  const [reqCourtFile, setReqCourtFile] = useState<File | null>(null);
+  const [isRequestingInh, setIsRequestingInh] = useState(false);
+  const [reqInhResult, setReqInhResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const handleInheritanceRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!reqLandId || !reqCourtFile || !address) return;
+    setIsRequestingInh(true);
+    setReqInhResult(null);
+    try {
+      const cid = await uploadFileToIPFS(reqCourtFile, `court-order-${reqLandId}`);
+      if (!cid) throw new Error('IPFS upload failed — check Pinata keys');
+      const res = await fetch('/api/inheritance-request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ landId: reqLandId, requesterAddress: address, courtOrderCid: cid }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setReqInhResult({ ok: true, msg: 'Request submitted. Admin will review your court order and initiate the inheritance procedure.' });
+      setReqLandId('');
+      setReqCourtFile(null);
+    } catch (err) {
+      setReqInhResult({ ok: false, msg: (err as Error).message });
+    }
+    setIsRequestingInh(false);
+  };
+
   // ── Succession voting ─────────────────────────────────────────────────────
   const [successionLandId, setSuccessionLandId] = useState('');
   const [successionPlan, setSuccessionPlan] = useState<{
@@ -283,6 +406,7 @@ export default function UserDashboard() {
       setHasApproved(true);
       handleCheckSuccessionPlan();
       loadLands();
+      loadMySuccessionPlans();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isApproveSuccess, approveHash]);
@@ -293,6 +417,7 @@ export default function UserDashboard() {
       setTxToast({ hash: disputeHash, message: 'Succession plan disputed.' });
       handleCheckSuccessionPlan();
       loadLands();
+      loadMySuccessionPlans();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDisputeSuccess, disputeHash]);
@@ -469,16 +594,28 @@ export default function UserDashboard() {
 
       const onChainSet = new Set(onChainLandIds);
 
-      // Step 2: Supabase only for unminted allotments (not yet on-chain)
-      const { data: govtRecords } = await supabase
-        .from('govt_land_records')
-        .select('*')
+      // Step 2: Find which land_ids this CNIC is listed as a co-owner of
+      //         (land_co_owners is the source of truth for co-ownership)
+      const { data: coOwnerRows } = await supabase
+        .from('land_co_owners')
+        .select('land_id, verified_at')
         .eq('owner_cnic', profile.cnic);
 
-      const allGovtRecords: GovtRecord[] = govtRecords ?? [];
-      const unmintedRecords = allGovtRecords.filter((r) => !onChainSet.has(r.land_id));
+      const myCoOwnerEntries: { land_id: string; verified_at: string | null }[] = coOwnerRows ?? [];
+      const myLandIds = myCoOwnerEntries.map((r) => r.land_id);
 
-      // Step 3: resolve on-chain lands
+      // Step 3: Fetch govt_land_records for those land_ids (metadata: location, area, type, ipfs_hash)
+      const { data: govtRecords } = myLandIds.length > 0
+        ? await supabase
+            .from('govt_land_records')
+            .select('*')
+            .in('land_id', myLandIds)
+        : { data: [] };
+
+      const allGovtRecords: GovtRecord[] = govtRecords ?? [];
+      const unmintedLandIds = myLandIds.filter((id) => !onChainSet.has(id));
+
+      // Step 4: resolve on-chain lands
       const onChainSummaries = await Promise.all(
         onChainLandIds.map(async (landId): Promise<LandSummary> => {
           const [onChainRecord, shareBps] = await Promise.all([
@@ -525,49 +662,77 @@ export default function UserDashboard() {
         })
       );
 
-      // Step 4: Supabase records not held via getLandsByOwner. Some of these may
-      // already be *proposed* on-chain (PENDING_VERIFICATION): proposeLandImport
-      // creates the LandRecord but does NOT assign shares until verifyLandImport
-      // finalises it — so they don't show up in getLandsByOwner yet. Check each
-      // against getLandRecord so a proposed land surfaces with the "Confirm
-      // Ownership" action instead of incorrectly re-offering "Verify & Mint"
-      // (which would fail with "Land already minted on-chain").
+      // Step 5: For unminted lands, fetch co-verification counts from land_co_owners
+      //         in one batch query, then build a map: land_id → { totalCount, verifiedCount }
+      let coVerifMap: Record<string, { totalCount: number; verifiedCount: number }> = {};
+      if (unmintedLandIds.length > 0) {
+        const { data: coRows } = await supabase
+          .from('land_co_owners')
+          .select('land_id, verified_at')
+          .in('land_id', unmintedLandIds);
+
+        if (coRows) {
+          for (const row of coRows) {
+            const entry = coVerifMap[row.land_id] ?? { totalCount: 0, verifiedCount: 0 };
+            entry.totalCount += 1;
+            if (row.verified_at) entry.verifiedCount += 1;
+            coVerifMap[row.land_id] = entry;
+          }
+        }
+      }
+
+      // Step 6: Build unminted summaries. Some unminted lands may already be
+      // *proposed* on-chain (PENDING_VERIFICATION): proposeLandImport creates the
+      // LandRecord but shares aren't assigned until verifyLandImport finalises it,
+      // so they don't appear in getLandsByOwner yet. Surface them with
+      // "Confirm Ownership" instead of re-offering "Verify & Mint".
       const unmintedSummaries: LandSummary[] = await Promise.all(
-        unmintedRecords.map(async (gr): Promise<LandSummary> => {
+        unmintedLandIds.map(async (landId): Promise<LandSummary> => {
+          const gr = allGovtRecords.find((r) => r.land_id === landId);
+          const myEntry = myCoOwnerEntries.find((r) => r.land_id === landId);
+          const cv = coVerifMap[landId] ?? { totalCount: 1, verifiedCount: 0 };
+          const coVerification: CoVerification = {
+            totalCount: cv.totalCount,
+            verifiedCount: cv.verifiedCount,
+            myVerified: myEntry?.verified_at !== null && myEntry?.verified_at !== undefined,
+          };
+
           try {
             const rec = (await publicClient.readContract({
               address: CONTRACT_V9_ADDRESS,
               abi: CONTRACT_V9_ABI,
               functionName: 'getLandRecord',
-              args: [gr.land_id],
+              args: [landId],
             })) as { landId: string; ipfsHash: string; landType: number; status: number };
 
             if (rec.landId && rec.landId !== '') {
               // Proposed on-chain but not yet finalised for this wallet.
               return {
-                landId: gr.land_id,
+                landId,
                 ipfsHash: rec.ipfsHash,
                 landType: rec.landType,
                 status: rec.status,
                 shareBps: 0,
-                location: gr.location,
-                areaSqYards: gr.area_sq_yards,
+                location: gr?.location,
+                areaSqYards: gr?.area_sq_yards,
                 isOnChain: true,
-                govtIpfsHash: gr.ipfs_hash,
+                govtIpfsHash: gr?.ipfs_hash ?? null,
+                coVerification,
               };
             }
           } catch { /* not on-chain yet — fall through to unminted */ }
 
           return {
-            landId: gr.land_id,
-            ipfsHash: gr.ipfs_hash ?? '',
+            landId,
+            ipfsHash: gr?.ipfs_hash ?? '',
             landType: 0,
             status: -1,
             shareBps: 0,
-            location: gr.location,
-            areaSqYards: gr.area_sq_yards,
+            location: gr?.location,
+            areaSqYards: gr?.area_sq_yards,
             isOnChain: false,
-            govtIpfsHash: gr.ipfs_hash,
+            govtIpfsHash: gr?.ipfs_hash ?? null,
+            coVerification,
           };
         })
       );
@@ -586,7 +751,7 @@ export default function UserDashboard() {
   }, [mounted, profile?.isRegistered, profile?.cnic, address]); // loadLands is a stable local function
 
   // ─── Tab button helper ────────────────────────────────────────────────────
-  const tabBtn = (t: Tab, label: string, Icon: React.ElementType) => (
+  const tabBtn = (t: Tab, label: string, Icon: React.ElementType, badge?: number) => (
     <button
       onClick={() => setTab(t)}
       className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
@@ -596,6 +761,11 @@ export default function UserDashboard() {
       }`}
     >
       <Icon size={14} /> {label}
+      {!!badge && badge > 0 && (
+        <span className="ml-0.5 bg-orange-500 text-white text-[10px] font-bold w-4 h-4 flex items-center justify-center rounded-full">
+          {badge}
+        </span>
+      )}
     </button>
   );
 
@@ -656,7 +826,7 @@ export default function UserDashboard() {
             {/* Tab bar */}
             <div className="flex flex-wrap gap-2">
               {tabBtn('lands', 'My Lands', Home)}
-              {tabBtn('succession', 'Succession Voting', Gavel)}
+              {tabBtn('succession', 'Succession Voting', Gavel, mySuccessionPlans.filter(p => !p.hasMyApproval).length)}
               {tabBtn('subdivision', 'Subdivision Voting', GitBranch)}
               {tabBtn('occupancy', 'Occupancy', Users)}
               {tabBtn('withdraw', 'Withdraw', Wallet)}
@@ -718,17 +888,44 @@ export default function UserDashboard() {
                         </a>
                       )}
 
+                      {/* Co-verification progress (multi-owner, not yet on-chain) */}
+                      {!land.isOnChain && land.coVerification && land.coVerification.totalCount > 1 && (
+                        <div className="mt-2 p-3 rounded-xl bg-indigo-500/5 border border-indigo-500/15 space-y-2">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="flex items-center gap-1.5 text-indigo-300 font-medium">
+                              <Users size={12} /> Co-owner Verification
+                            </span>
+                            <span className="text-muted font-mono">
+                              {land.coVerification.verifiedCount} / {land.coVerification.totalCount} verified
+                            </span>
+                          </div>
+                          <div className="w-full h-1.5 rounded-full bg-white/5 overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-indigo-500 transition-all"
+                              style={{ width: `${(land.coVerification.verifiedCount / land.coVerification.totalCount) * 100}%` }}
+                            />
+                          </div>
+                          <p className="text-[11px] text-muted leading-relaxed">
+                            {land.coVerification.myVerified
+                              ? `You have verified. Waiting for ${land.coVerification.totalCount - land.coVerification.verifiedCount} other co-owner(s) to verify before this land is proposed on-chain.`
+                              : `This land has ${land.coVerification.totalCount} co-owners. All must verify before it can be minted.`}
+                          </p>
+                        </div>
+                      )}
+
                       <div className="flex flex-wrap gap-2 pt-1">
                         {/* Not on-chain: Verify & Mint */}
                         {!land.isOnChain && (
                           <button
-                            disabled={verifyingLandId === land.landId}
+                            disabled={verifyingLandId === land.landId || land.coVerification?.myVerified === true}
                             onClick={() => handleVerifyAndMint(land.landId)}
-                            className="btn-primary text-xs py-1.5 px-3 flex items-center gap-1"
+                            className="btn-primary text-xs py-1.5 px-3 flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             {verifyingLandId === land.landId
-                              ? <><Loader2 size={12} className="animate-spin" /> Minting…</>
-                              : <><CheckCircle size={12} /> Verify & Mint</>}
+                              ? <><Loader2 size={12} className="animate-spin" /> Verifying…</>
+                              : land.coVerification?.myVerified
+                                ? <><CheckCircle size={12} /> Verified</>
+                                : <><CheckCircle size={12} /> Verify & Mint</>}
                           </button>
                         )}
 
@@ -809,8 +1006,198 @@ export default function UserDashboard() {
             {/* ── Tab: Succession Voting ────────────────────────────────────── */}
             {tab === 'succession' && (
               <section className="space-y-5">
+
+                {/* ── Pending succession plans where I am a heir ─────────── */}
+                {isLoadingMyPlans ? (
+                  <div className="flex items-center gap-2 text-muted text-sm">
+                    <Loader2 size={16} className="animate-spin" /> Checking for pending succession plans…
+                  </div>
+                ) : mySuccessionPlans.length > 0 && (
+                  <div className="space-y-4">
+                    {mySuccessionPlans.map((plan) => (
+                      <div key={plan.landId} className="glass-card rounded-2xl overflow-hidden">
+                        {/* Header */}
+                        <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
+                          <div>
+                            <p className="text-xs text-muted uppercase tracking-wide font-medium">Pending Succession Plan</p>
+                            <p className="font-semibold font-mono mt-0.5">{plan.landId}</p>
+                          </div>
+                          <span className={`pill border ${plan.hasMyApproval ? 'bg-green-500/10 text-green-400 border-green-500/20' : 'bg-orange-500/10 text-orange-400 border-orange-500/20'}`}>
+                            {plan.hasMyApproval ? 'You voted' : 'Awaiting your vote'}
+                          </span>
+                        </div>
+
+                        {/* Court order */}
+                        <div className="px-5 py-4 border-b border-white/5">
+                          <p className="text-xs text-muted mb-2">Court Order</p>
+                          <div className="flex items-center gap-3">
+                            {/* Try to show image thumbnail; falls back to file icon for PDFs */}
+                            <div className="w-16 h-16 rounded-lg overflow-hidden bg-white/5 flex items-center justify-center shrink-0">
+                              <img
+                                src={`${IPFS_GATEWAY}/${plan.courtOrderCid}`}
+                                alt="Court order"
+                                className="w-full h-full object-cover"
+                                onError={(e) => {
+                                  (e.currentTarget as HTMLImageElement).style.display = 'none';
+                                  (e.currentTarget.nextElementSibling as HTMLElement | null)?.removeAttribute('style');
+                                }}
+                              />
+                              <FileText size={28} className="text-muted" style={{ display: 'none' }} />
+                            </div>
+                            <a
+                              href={`${IPFS_GATEWAY}/${plan.courtOrderCid}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="btn-ghost text-xs px-3 py-2 flex items-center gap-1.5"
+                            >
+                              <ExternalLink size={12} /> View full document
+                            </a>
+                          </div>
+                        </div>
+
+                        {/* Share breakdown */}
+                        <div className="px-5 py-4 border-b border-white/5">
+                          <p className="text-xs text-muted mb-3">Share Division as per Court Order</p>
+                          <div className="space-y-1.5">
+                            {plan.heirs.map((heir, i) => {
+                              const bps = plan.heirShares[i] ?? 0;
+                              const isMe = heir.toLowerCase() === address?.toLowerCase();
+                              return (
+                                <div key={heir} className={`flex items-center justify-between rounded-lg px-3 py-2 text-sm ${isMe ? 'bg-indigo-500/10 border border-indigo-500/20' : 'bg-white/3'}`}>
+                                  <span className="font-mono text-xs text-muted truncate max-w-[180px]">
+                                    {heir.slice(0, 6)}…{heir.slice(-4)}
+                                    {isMe && <span className="ml-2 text-indigo-400 font-medium not-italic">← You</span>}
+                                  </span>
+                                  <span className="text-sm font-semibold shrink-0">
+                                    {(bps / 100).toFixed(2)}%
+                                    <span className="ml-1 text-xs text-muted font-normal">({bps} bps)</span>
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Footer: vote progress + buttons */}
+                        <div className="px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-3">
+                          <div className="text-xs text-muted">
+                            Votes: <span className="text-foreground font-medium">{String(plan.approvalCount)}/{plan.heirs.length}</span>
+                            <span className="mx-2">·</span>
+                            Your share: <span className="text-foreground font-medium">{(plan.myShareBps / 100).toFixed(2)}%</span>
+                          </div>
+                          {!plan.hasMyApproval && !plan.isExecuted && (
+                            <div className="flex gap-2 sm:ml-auto">
+                              <button
+                                onClick={() => {
+                                  approveProcessedRef.current = false;
+                                  writeApprove({
+                                    address: CONTRACT_V9_ADDRESS,
+                                    abi: CONTRACT_V9_ABI,
+                                    functionName: 'approveSuccessionPlan',
+                                    args: [plan.landId],
+                                  });
+                                }}
+                                disabled={isApprovePending}
+                                className="btn-primary text-sm px-4 py-2 flex items-center gap-2"
+                              >
+                                {isApprovePending && <Loader2 size={13} className="animate-spin" />}
+                                <CheckCircle size={13} /> I Agree
+                              </button>
+                              <button
+                                onClick={() => {
+                                  disputeProcessedRef.current = false;
+                                  writeDispute({
+                                    address: CONTRACT_V9_ADDRESS,
+                                    abi: CONTRACT_V9_ABI,
+                                    functionName: 'disputeSuccessionPlan',
+                                    args: [plan.landId],
+                                  });
+                                }}
+                                disabled={isDisputePending}
+                                className="btn-ghost text-sm px-4 py-2 flex items-center gap-2 text-red-400 hover:text-red-300 border border-red-500/20 hover:border-red-500/40"
+                              >
+                                {isDisputePending && <Loader2 size={13} className="animate-spin" />}
+                                <X size={13} /> Dispute
+                              </button>
+                            </div>
+                          )}
+                          {plan.hasMyApproval && (
+                            <span className="sm:ml-auto text-xs text-green-400 flex items-center gap-1">
+                              <CheckCircle size={12} /> Your vote recorded
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* ── Request Inheritance ──────────────────────────────────── */}
                 <div className="glass-card p-5 rounded-2xl space-y-4">
-                  <h2 className="font-semibold text-foreground">Check Succession Plan</h2>
+                  <div>
+                    <h2 className="font-semibold text-foreground">Request Inheritance</h2>
+                    <p className="text-xs text-muted mt-1">
+                      Select the land you are inheriting, upload the court order, and submit. Admin will review and initiate the on-chain inheritance procedure.
+                    </p>
+                  </div>
+                  <form onSubmit={handleInheritanceRequest} className="space-y-3">
+                    <div>
+                      <label className="text-xs text-muted block mb-1">Select your land</label>
+                      <select
+                        value={reqLandId}
+                        onChange={(e) => setReqLandId(e.target.value)}
+                        className="field w-full"
+                        required
+                      >
+                        <option value="">— choose a land —</option>
+                        {lands
+                          .filter((l) => l.isOnChain && l.status === LandStatusV9.ACTIVE)
+                          .map((l) => (
+                            <option key={l.landId} value={l.landId}>
+                              {l.landId}{l.location ? ` · ${l.location}` : ''}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted block mb-1">
+                        Court order <span className="text-muted-foreground normal-case font-normal">— PDF, JPG or PNG</span>
+                      </label>
+                      <label className="flex items-center gap-3 cursor-pointer field w-full py-2.5 px-3 hover:border-white/20 transition-colors">
+                        <Upload size={14} className="text-muted shrink-0" />
+                        <span className="text-sm text-muted truncate">
+                          {reqCourtFile ? reqCourtFile.name : 'Click to choose file…'}
+                        </span>
+                        <input
+                          type="file"
+                          accept=".pdf,.jpg,.jpeg,.png"
+                          className="hidden"
+                          onChange={(e) => setReqCourtFile(e.target.files?.[0] ?? null)}
+                          required
+                        />
+                      </label>
+                    </div>
+
+                    {reqInhResult && (
+                      <div className={`text-xs p-3 rounded-lg border ${reqInhResult.ok ? 'bg-green-500/10 border-green-500/20 text-green-400' : 'bg-red-500/10 border-red-500/20 text-red-400'}`}>
+                        {reqInhResult.msg}
+                      </div>
+                    )}
+
+                    <button
+                      type="submit"
+                      disabled={isRequestingInh || !reqLandId || !reqCourtFile}
+                      className="btn-primary w-full flex items-center justify-center gap-2"
+                    >
+                      {isRequestingInh && <Loader2 size={14} className="animate-spin" />}
+                      {isRequestingInh ? 'Uploading & submitting…' : 'Submit Request'}
+                    </button>
+                  </form>
+                </div>
+
+                {/* ── Vote on Succession Plan ──────────────────────────────── */}
+                <div className="glass-card p-5 rounded-2xl space-y-4">
+                  <h2 className="font-semibold text-foreground">Vote on Succession Plan</h2>
                   <p className="text-xs text-muted">
                     Enter the <span className="text-muted">deceased owner&apos;s land ID</span> to view and vote on the succession plan.
                   </p>

@@ -8,7 +8,7 @@
 //           inheritance as share redistribution, legal subdivision, occupancy agreements,
 //           role-based governance (ADMIN/REGISTRAR/RESOLVER/PAUSER)
 
-export const CONTRACT_V9_ADDRESS = "0xbA6b940C539a99BDBc1a7B172065177bE04E26e8" as const;
+export const CONTRACT_V9_ADDRESS = "0x1d08E371447c0a923B8b935Ffe83A146f9fe457A" as const;
 
 export const CONTRACT_V9_ABI = [
   {

@@ -3,6 +3,7 @@ import { createWalletClient, createPublicClient, http } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { sepolia } from 'viem/chains';
 import { CONTRACT_V9_ABI, CONTRACT_V9_ADDRESS } from '@/src/utils/contractV9';
+import { getAdminKey } from '@/src/utils/adminKey';
 
 const RPC_URL = 'https://ethereum-sepolia.publicnode.com';
 
@@ -21,12 +22,11 @@ const RPC_URL = 'https://ethereum-sepolia.publicnode.com';
  * }
  */
 export async function POST(request: Request) {
-  const adminPrivateKey = process.env.ADMIN_PRIVATE_KEY;
-  if (!adminPrivateKey) {
-    return NextResponse.json(
-      { error: 'Server misconfigured: missing ADMIN_PRIVATE_KEY' },
-      { status: 500 }
-    );
+  let adminPrivateKey: `0x${string}`;
+  try {
+    adminPrivateKey = getAdminKey();
+  } catch (e) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : 'Server misconfigured' }, { status: 500 });
   }
 
   try {
@@ -51,7 +51,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Missing landId' }, { status: 400 });
     }
 
-    const account = privateKeyToAccount(adminPrivateKey as `0x${string}`);
+    const account = privateKeyToAccount(adminPrivateKey);
     const walletClient = createWalletClient({ account, chain: sepolia, transport: http(RPC_URL) });
     const publicClient = createPublicClient({ chain: sepolia, transport: http(RPC_URL) });
 
