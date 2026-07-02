@@ -5,6 +5,7 @@ import { sepolia } from 'viem/chains';
 import { createClient } from '@supabase/supabase-js';
 import { CONTRACT_V9_ABI, CONTRACT_V9_ADDRESS } from '@/src/utils/contractV9';
 import { getAdminKey } from '@/src/utils/adminKey';
+import { encryptJSON } from '@/src/utils/encryption';
 
 const RPC_URL = 'https://ethereum-sepolia.publicnode.com';
 
@@ -213,14 +214,33 @@ export async function POST(request: Request) {
         ],
       };
 
-      ipfsHash = await pinJsonToPinata(metadata, `LandLedger-${landId}`);
+      // The metadata contains owner CNICs, so it is encrypted before pinning.
+      // The CID stored on-chain stays a real IPFS address (tokenURI keeps
+      // working); only the content it points to is sealed. The AES key lives
+      // in Supabase and never goes on-chain or to the browser.
+      const { payload: encryptedPayload, keyHex } = encryptJSON(metadata);
 
-      await db
+      ipfsHash = await pinJsonToPinata(encryptedPayload, `LandLedger-${landId}`);
+
+      const { error: updateErr } = await db
         .from('govt_land_records')
-        .update({ ipfs_hash: ipfsHash })
+        .update({ ipfs_hash: ipfsHash, enc_key: keyHex })
         .eq('land_id', landId);
 
-      console.log(`Metadata pinned for ${landId}: ${ipfsHash}`);
+      if (updateErr) {
+        // Without the persisted key the pinned content is permanently
+        // undecryptable — abort rather than mint an unreadable record.
+        return NextResponse.json(
+          {
+            error:
+              `Failed to persist encryption key (${updateErr.message}). ` +
+              `Ensure govt_land_records has TEXT columns "ipfs_hash" and "enc_key".`,
+          },
+          { status: 500 }
+        );
+      }
+
+      console.log(`Encrypted metadata pinned for ${landId}: ${ipfsHash}`);
     }
 
     const landType = LAND_TYPE_MAP[(govtRecord.land_type ?? 'RESIDENTIAL').toUpperCase()] ?? 0;

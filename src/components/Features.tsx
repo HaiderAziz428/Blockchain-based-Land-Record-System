@@ -41,10 +41,10 @@ export default function Features() {
             <div className="w-full border-t border-border mb-6 relative">
               <div className="absolute top-0 left-0 h-[2px] w-8 bg-accent" />
             </div>
-            <div className="flex items-start justify-between mb-8">
+            {/* <div className="flex items-start justify-between mb-8">
               <Icon size={20} className="text-accent" strokeWidth={1.5} />
               <span className="font-mono text-[11px] text-muted/50">0{i + 1}</span>
-            </div>
+            </div> */}
             <h3 className="font-sans text-base font-semibold text-foreground mb-3 tracking-tight leading-snug">
               {title}
             </h3>

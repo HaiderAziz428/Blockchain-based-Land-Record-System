@@ -121,9 +121,10 @@ Next.js API Route (/api/verify/route.ts)
   ├─ publicClient.readContract(getLandRecord)
   │    confirms land is not already minted
   │
-  ├─ pinJsonToPinata(metadata)
-  │    uploads ERC-721 metadata JSON to IPFS
-  │    returns CID
+  ├─ encryptJSON(metadata)  →  pinJsonToPinata(encryptedPayload)
+  │    seals the ERC-721 metadata (contains owner CNICs) with AES-256-GCM,
+  │    pins the encrypted payload to IPFS, returns CID
+  │    (per-record key saved to govt_land_records.enc_key — see below)
   │
   ├─ supabase.update({ ipfs_hash: CID })
   │    saves CID back to govt registry
@@ -207,3 +208,55 @@ This happens because the authentication tag computed during decryption no longer
 | `src/app/api/inheritance/route.ts` | Inheritance — calls `getAdminKey()` before signing `initiateInheritance` |
 | `src/app/api/dispute/route.ts` | Dispute resolution — calls `getAdminKey()` before signing resolve functions |
 | `src/app/api/subdivision/route.ts` | Subdivision — calls `getAdminKey()` before signing `proposeSubdivision` |
+
+---
+
+# Land-Record Metadata Encryption
+
+The second thing encrypted in LandLedger is the **ERC-721 metadata JSON** built
+at mint time in `/api/verify`. It contains the owners' CNICs, so it must not be
+readable by anyone who finds the CID on a public IPFS gateway.
+
+- **What is encrypted:** the metadata JSON content, before it is pinned to Pinata.
+- **What is NOT encrypted:** the CID itself — the on-chain `ipfsHash` must stay a
+  real IPFS address so `tokenURI()` and the ERC-721 standard keep working.
+- **Algorithm:** the same AES-256-GCM as above, but with a **fresh random
+  256-bit key per land record** (not the master key). The per-record key is
+  stored in `govt_land_records.enc_key` and never goes on-chain or to the
+  browser.
+
+```
+Build metadata JSON (CNICs, plot details)
+  → encryptJSON()                    [src/utils/encryption.ts]
+  → pin encrypted payload to Pinata  → real CID
+  → CID goes on-chain (tokenURI works)
+  → enc_key saved to Supabase govt_land_records.enc_key
+```
+
+Reading back: `GET /api/metadata?landId=X` looks up CID + `enc_key`, fetches the
+encrypted bytes from the gateway, decrypts **server-side**, strips the identity
+fields (CNIC / owner attributes), and returns only the safe fields to the
+browser. Plaintext legacy records are passed through the same redaction.
+
+If persisting `enc_key` fails at mint time, the route **aborts the mint** —
+otherwise the pinned content would be permanently undecryptable. Required
+schema (run once in Supabase SQL editor):
+
+```sql
+ALTER TABLE govt_land_records ADD COLUMN IF NOT EXISTS enc_key TEXT;
+```
+
+What the raw IPFS content looks like:
+
+```json
+{ "encrypted": true, "algorithm": "aes-256-gcm", "iv": "3a8f…", "data": "7f2e…" }
+```
+
+Listing photos and listing metadata stay unencrypted — they are public
+marketplace data buyers need to browse.
+
+| File | Role |
+|------|------|
+| `src/utils/encryption.ts` | `encryptJSON()` / `decryptJSON()` / `isEncryptedPayload()` (server-only) |
+| `src/app/api/verify/route.ts` | Encrypts metadata before pinning; persists `enc_key` |
+| `src/app/api/metadata/route.ts` | Server-side decryption + identity-field redaction |

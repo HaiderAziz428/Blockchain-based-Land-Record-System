@@ -47,9 +47,7 @@ next-env.d.ts
 /broadcast/
 /cache/
 /contracts/
-/foundry.toml
 /lib/
-/script/
 INSTRUCTIONS.md
 handoff.md
 
