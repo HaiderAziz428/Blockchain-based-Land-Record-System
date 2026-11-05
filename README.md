@@ -18,8 +18,7 @@
 [![IPFS](https://img.shields.io/badge/IPFS-Pinata-65C2CB?logo=ipfs)](https://www.pinata.cloud/)
 [![Network](https://img.shields.io/badge/Network-Sepolia%20Testnet-purple)](https://sepolia.etherscan.io/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](#-license)
-[![Build](https://img.shields.io/badge/build-passing-brightgreen)](#)
-[![Status](https://img.shields.io/badge/status-FYP--Submission-orange)](#)
+![Status](https://img.shields.io/badge/status-FYP%20Completed-brightgreen)
 
 </div>
 
@@ -62,12 +61,11 @@
 | **University** | _Institute of Space Technology_ |
 | **Department** | _Department of Computer Science_ |
 | **Team Members** | _Muhammad Haidar Aziz, Muhammad Riyyan_ |
-| **Supervisor** | _[Mr.Haroon Ibrahim, lecturer]_ |
-| **Co-Supervisor** | _Ma’am Shakira Musa Baig_ |
+| **Supervisor** | Dr. Haroon Ibrahim |
 | **Submission Year** | 2026 |
 | **Project Duration** | 8 months (Sept 2025 — May 2026) |
 | **Deployed Network** | Ethereum Sepolia Testnet |
-| **Deployed Contract** | [`0xd2a855a8fC38d4E0a871319d5882E696155d1253`](https://sepolia.etherscan.io/address/0xd2a855a8fC38d4E0a871319d5882E696155d1253) — _legacy v3; the **v7 hybrid-governance source** in `contract.sol` requires redeployment before the frontend can use it (see §Smart Contract Design)_ |
+| **Deployed Contract** | [`0x1d08E371447c0a923B8b935Ffe83A146f9fe457A`](https://sepolia.etherscan.io/address/0x1d08E371447c0a923B8b935Ffe83A146f9fe457A) — EIP-2535 Diamond proxy used by the frontend (`src/utils/contractV9.ts`) |
 
 ---
 
@@ -832,8 +830,6 @@ A full enumeration of every previous vulnerability class and the property now de
 | Auditability | Append-only audit logs for marketplace, inheritance overrides, subdivision overrides |
 | Backend trust assumptions | Every backend action is either a proposal needing consent or an override committed to court / legal CIDs |
 
-### 🧮 The Fractional Ownership Model (carried from v6)
-
 ### 🧮 The Fractional Ownership Model
 
 #### Why this redesign
@@ -873,7 +869,7 @@ Every land NFT is minted to `address(this)` (self-custodial) and **can never lea
 
 ---
 
-### Single Contract: `LandRegistry.sol` — _v6 Layer Stack_
+### Contract Layer Stack (v6 reference)
 
 The system intentionally consolidates all logic into a single contract to minimize cross-contract calls and gas overhead. Modules are organized via section comments and follow the canonical Solidity layout order (errors → types → state → events → modifiers → constructor → external → internal → views).
 
@@ -1714,7 +1710,7 @@ flowchart LR
 
 ### Supervision
 
-🙏 Heartfelt thanks to **_[Supervisor Name]_** for invaluable guidance, weekly reviews, and pushing us to think rigorously about real-world adoption barriers.
+🙏 Heartfelt thanks to our supervisor **Dr. Haroon Ibrahim** for invaluable guidance, weekly reviews, and pushing us to think rigorously about real-world adoption barriers.
 
 ### External Mentors & Communities
 
